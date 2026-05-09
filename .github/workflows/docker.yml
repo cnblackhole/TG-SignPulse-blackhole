@@ -37,6 +37,12 @@ jobs:
           username: luochend
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Set lowercase repository owner
+        run: |
+          echo "REPO_OWNER=${OWNER,,}" >>${GITHUB_ENV}
+        env:
+          OWNER: '${{ github.repository_owner }}'
+
       - name: Build and push
         uses: docker/build-push-action@v5
         with:
@@ -44,8 +50,8 @@ jobs:
           push: true
           platforms: linux/amd64,linux/arm64
           tags: |
-            ghcr.io/iluochen/tg-signpulse:latest
-            ghcr.io/iluochen/tg-signpulse:${{ github.sha }}
+            ghcr.io/${{ env.REPO_OWNER }}/tg-signpulse:latest
+            ghcr.io/${{ env.REPO_OWNER }}/tg-signpulse:${{ github.sha }}
             luochend/tg-signpulse:latest
             luochend/tg-signpulse:${{ github.sha }}
           cache-from: type=gha
