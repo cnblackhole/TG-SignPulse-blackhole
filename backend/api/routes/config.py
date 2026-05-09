@@ -368,6 +368,7 @@ class GlobalSettingsRequest(BaseModel):
     telegram_bot_notify_enabled: bool = False
     telegram_bot_login_notify_enabled: bool = False
     telegram_bot_task_failure_enabled: bool = True
+    telegram_bot_task_success_enabled: bool = False
     telegram_bot_token: Optional[str] = None
     telegram_bot_chat_id: Optional[str] = None
     telegram_bot_message_thread_id: Optional[int] = None
@@ -381,6 +382,7 @@ class GlobalSettingsResponse(BaseModel):
     telegram_bot_notify_enabled: bool = False
     telegram_bot_login_notify_enabled: bool = False
     telegram_bot_task_failure_enabled: bool = True
+    telegram_bot_task_success_enabled: bool = False
     telegram_bot_token: Optional[str] = None
     telegram_bot_chat_id: Optional[str] = None
     telegram_bot_message_thread_id: Optional[int] = None
@@ -410,6 +412,7 @@ async def save_global_settings(
             "telegram_bot_notify_enabled": request.telegram_bot_notify_enabled,
             "telegram_bot_login_notify_enabled": request.telegram_bot_login_notify_enabled,
             "telegram_bot_task_failure_enabled": request.telegram_bot_task_failure_enabled,
+            "telegram_bot_task_success_enabled": request.telegram_bot_task_success_enabled,
             "telegram_bot_token": request.telegram_bot_token,
             "telegram_bot_chat_id": request.telegram_bot_chat_id,
             "telegram_bot_message_thread_id": request.telegram_bot_message_thread_id,
@@ -427,6 +430,37 @@ async def save_global_settings(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to save global settings: {str(e)}",
         )
+
+
+class TelegramTestRequest(BaseModel):
+    bot_token: str
+    chat_id: str
+    message_thread_id: Optional[int] = None
+
+
+class TelegramTestResponse(BaseModel):
+    success: bool
+    message: str
+
+
+@router.post("/settings/telegram/test", response_model=TelegramTestResponse)
+async def test_telegram_bot(
+    request: TelegramTestRequest, current_user: User = Depends(get_current_user)
+):
+    try:
+        if not request.bot_token or not request.chat_id:
+            return TelegramTestResponse(success=False, message="Bot Token 和 Chat ID 不能为空")
+        
+        from backend.services.push_notifications import send_telegram_bot_message
+        await send_telegram_bot_message(
+            bot_token=request.bot_token,
+            chat_id=request.chat_id,
+            text="TG-SignPulse 测试消息\n\n🎉 您的 Telegram Bot 通知配置工作正常！",
+            message_thread_id=request.message_thread_id
+        )
+        return TelegramTestResponse(success=True, message="测试通知发送成功")
+    except Exception as e:
+        return TelegramTestResponse(success=False, message=f"发送失败: {str(e)}")
 
 
 class TelegramConfigRequest(BaseModel):

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -18,6 +19,40 @@ def _as_int_or_none(value: Any) -> Optional[int]:
         return None
 
 
+def _get_global_proxy() -> Optional[str]:
+    """Read proxy from environment or global settings.
+
+    Priority: TG_PROXY env → global_proxy in settings.
+    Returns a normalised URL string or ``None``.
+    """
+    env_proxy = os.environ.get("TG_PROXY", "").strip()
+    if env_proxy:
+        from backend.utils.proxy import normalize_proxy_url
+        return normalize_proxy_url(env_proxy)
+
+    try:
+        from backend.services.config import get_config_service
+        from backend.utils.proxy import normalize_proxy_url
+
+        proxy = get_config_service().get_global_settings().get("global_proxy")
+        if isinstance(proxy, str) and proxy.strip():
+            return normalize_proxy_url(proxy.strip())
+    except Exception:
+        pass
+    return None
+
+
+def _build_httpx_client(timeout: int = 10) -> httpx.AsyncClient:
+    """Build an httpx.AsyncClient with proxy support if configured."""
+    proxy_url = _get_global_proxy()
+    kwargs: Dict[str, Any] = {"timeout": timeout}
+    if proxy_url:
+        # httpx >= 0.28 uses ``proxy`` (single URL string).
+        # Older versions used ``proxies`` (dict). We try the modern API first.
+        kwargs["proxy"] = proxy_url
+    return httpx.AsyncClient(**kwargs)
+
+
 async def send_telegram_bot_message(
     *,
     bot_token: str,
@@ -33,12 +68,25 @@ async def send_telegram_bot_message(
     if message_thread_id is not None:
         payload["message_thread_id"] = message_thread_id
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with _build_httpx_client() as client:
         response = await client.post(
             f"https://api.telegram.org/bot{bot_token}/sendMessage",
             json=payload,
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            # Telegram returns {"ok": false, "description": "..."} on errors
+            try:
+                error_detail = response.json()
+                description = error_detail.get("description", response.text)
+            except Exception:
+                description = response.text
+            logger.error(
+                "Telegram Bot API error: HTTP %s, chat_id=%s, detail=%s",
+                response.status_code,
+                chat_id,
+                description,
+            )
+            response.raise_for_status()
 
 
 async def send_keyword_push(settings: Dict[str, Any], payload: Dict[str, Any]) -> None:
@@ -74,7 +122,7 @@ async def send_keyword_push(settings: Dict[str, Any], payload: Dict[str, Any]) -
         data = {"title": title, "body": body}
         if url:
             data["url"] = url
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with _build_httpx_client() as client:
             response = await client.post(bark_url, json=data)
             response.raise_for_status()
         return
@@ -95,12 +143,12 @@ async def send_keyword_push(settings: Dict[str, Any], payload: Dict[str, Any]) -
             .replace("{body}", quote(body))
             .replace("{url}", quote(url))
         )
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with _build_httpx_client() as client:
             response = await client.get(final_url)
             response.raise_for_status()
         return
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with _build_httpx_client() as client:
         response = await client.post(custom_url, json=request_payload)
         response.raise_for_status()
 

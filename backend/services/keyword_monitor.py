@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -1305,26 +1305,38 @@ class KeywordMonitorService:
                     push_settings["keyword_monitor_custom_url"] = rule.action.get(
                         "custom_url"
                     )
-                    await send_keyword_push(
-                        push_settings,
-                        {
-                            "title": "TG-SignPulse keyword matched",
-                            "body": forward_text,
-                            "text": text,
-                            "keyword": matched,
-                            "account_name": account_name,
-                            "task_name": rule.task_name,
-                            "chat_id": getattr(message.chat, "id", None),
-                            "chat_title": chat_title,
-                            "sender": sender,
-                            "message_id": message.id,
-                            "url": url,
-                        },
-                    )
-                    self._append_rule_log(
-                        rule,
-                        f"关键词命中通知已处理：推送方式={push_channel}",
-                    )
+                    try:
+                        await send_keyword_push(
+                            push_settings,
+                            {
+                                "title": "TG-SignPulse keyword matched",
+                                "body": forward_text,
+                                "text": text,
+                                "keyword": matched,
+                                "account_name": account_name,
+                                "task_name": rule.task_name,
+                                "chat_id": getattr(message.chat, "id", None),
+                                "chat_title": chat_title,
+                                "sender": sender,
+                                "message_id": message.id,
+                                "url": url,
+                            },
+                        )
+                        self._append_rule_log(
+                            rule,
+                            f"关键词命中通知已处理：推送方式={push_channel}",
+                        )
+                    except Exception as push_exc:
+                        logger.warning(
+                            "Keyword monitor push notification failed for task %s: %s",
+                            rule.task_name,
+                            push_exc,
+                            exc_info=True,
+                        )
+                        self._append_rule_log(
+                            rule,
+                            f"关键词命中通知发送失败：推送方式={push_channel}，错误={push_exc}",
+                        )
                 if continue_enabled:
                     await self._execute_continue_actions(
                         account_name=account_name,

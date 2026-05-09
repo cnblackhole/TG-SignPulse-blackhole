@@ -1,4 +1,4 @@
-﻿FROM node:20-slim AS frontend-builder
+FROM node:20-slim AS frontend-builder
 
 WORKDIR /frontend
 
@@ -20,6 +20,8 @@ ENV PYTHONUNBUFFERED=1 \
   TZ=Asia/Shanghai
 
 WORKDIR /app
+
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
 
 RUN apt-get update && apt-get install -y --no-install-recommends build-essential tzdata gosu && \
   rm -rf /var/lib/apt/lists/*

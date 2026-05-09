@@ -472,6 +472,7 @@ export interface GlobalSettings {
   telegram_bot_notify_enabled?: boolean;
   telegram_bot_login_notify_enabled?: boolean;
   telegram_bot_task_failure_enabled?: boolean;
+  telegram_bot_task_success_enabled?: boolean;
   telegram_bot_token?: string | null;
   telegram_bot_chat_id?: string | null;
   telegram_bot_message_thread_id?: number | null;
@@ -484,6 +485,15 @@ export const saveGlobalSettings = (token: string, settings: GlobalSettings) =>
   request<{ success: boolean; message: string }>("/config/settings", {
     method: "POST",
     body: JSON.stringify(settings),
+  }, token);
+
+export const testTelegramBotNotification = (
+  token: string,
+  config: { bot_token: string; chat_id: string; message_thread_id?: number | null }
+) =>
+  request<{ success: boolean; message: string }>("/config/settings/telegram/test", {
+    method: "POST",
+    body: JSON.stringify(config),
   }, token);
 
 // ============ Telegram API 配置 ============
