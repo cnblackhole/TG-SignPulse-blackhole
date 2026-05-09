@@ -48,8 +48,11 @@ def _build_httpx_client(timeout: int = 10) -> httpx.AsyncClient:
     kwargs: Dict[str, Any] = {"timeout": timeout}
     if proxy_url:
         # httpx >= 0.28 uses ``proxy`` (single URL string).
-        # Older versions used ``proxies`` (dict). We try the modern API first.
-        kwargs["proxy"] = proxy_url
+        # Older versions used ``proxies`` (dict mapping). Try modern API first.
+        try:
+            return httpx.AsyncClient(proxy=proxy_url, **kwargs)
+        except TypeError:
+            kwargs["proxies"] = {"all://": proxy_url}
     return httpx.AsyncClient(**kwargs)
 
 

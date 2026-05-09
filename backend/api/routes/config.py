@@ -460,7 +460,7 @@ async def test_telegram_bot(
         )
         return TelegramTestResponse(success=True, message="测试通知发送成功")
     except Exception as e:
-        return TelegramTestResponse(success=False, message=f"发送失败: {str(e)}")
+        return TelegramTestResponse(success=False, message=f"发送失败 [{type(e).__name__}]: {e}")
 
 
 class TelegramConfigRequest(BaseModel):
