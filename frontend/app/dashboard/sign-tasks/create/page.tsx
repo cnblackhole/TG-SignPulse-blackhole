@@ -12,6 +12,7 @@ import {
     listAccounts,
     getAccountChats,
     searchAccountChats,
+    testSendMessage,
     AccountInfo,
     ChatInfo,
     SignTaskChat,
@@ -29,6 +30,32 @@ import {
 import { ThemeLanguageToggle } from "../../../../components/ThemeLanguageToggle";
 import { useLanguage } from "../../../../context/LanguageContext";
 import { ToastContainer, useToast } from "../../../../components/ui/toast";
+
+const DICE_OPTIONS = ["🎲", "🎯", "🏀", "⚽", "🎳", "🎰"];
+
+const ACTION_TYPES = [
+    { value: 1, labelKey: "action_send_text" },
+    { value: 2, labelKey: "action_send_dice" },
+    { value: 3, labelKey: "action_click_button" },
+    { value: 4, labelKey: "action_ai_vision_click" },
+    { value: 5, labelKey: "action_ai_logic_send" },
+    { value: 6, labelKey: "action_ai_vision_send" },
+    { value: 7, labelKey: "action_ai_logic_click" },
+    { value: 8, labelKey: "keyword_monitor" },
+];
+
+const defaultActionData = (actionType: number): any => {
+    switch (actionType) {
+        case 2: return { action: 2, dice: "🎲" };
+        case 3: return { action: 3, text: "" };
+        case 4: return { action: 4, question: "" };
+        case 5: return { action: 5 };
+        case 6: return { action: 6 };
+        case 7: return { action: 7 };
+        case 8: return { action: 8, keywords: [], match_mode: "contains", ignore_case: true, push_channel: "telegram" };
+        default: return { action: 1, text: "" };
+    }
+};
 
 function CreateSignTaskContent() {
     const router = useRouter();
@@ -60,6 +87,10 @@ function CreateSignTaskContent() {
     const [chatSearch, setChatSearch] = useState("");
     const [chatSearchResults, setChatSearchResults] = useState<ChatInfo[]>([]);
     const [chatSearchLoading, setChatSearchLoading] = useState(false);
+
+    // 测试发送
+    const [testText, setTestText] = useState("/checkin");
+    const [testSending, setTestSending] = useState(false);
 
     // 用 ref 稳定回调，避免 addToast/t 变化时触发 useEffect 无限重跑
     const addToastRef = useRef(addToast);
@@ -195,6 +226,8 @@ function CreateSignTaskContent() {
             setChatSearch("");
             setChatSearchResults([]);
             setChatSearchLoading(false);
+            setTestText("/checkin");
+            setTestSending(false);
         }
     }, [editingChat]);
 
@@ -206,8 +239,33 @@ function CreateSignTaskContent() {
         if (!editingChat) return;
         if (editingChat.chat_id === 0) { addToastRef.current(tRef.current("select_chat_error"), "error"); return; }
         if (editingChat.actions.length === 0) { addToastRef.current(tRef.current("add_action_error"), "error"); return; }
+        const firstActionType = editingChat.actions[0]?.action;
+        if (firstActionType !== 1 && firstActionType !== 2) {
+            addToastRef.current(tRef.current("first_action_must_be_send"), "error");
+            return;
+        }
         setChats([...chats, editingChat]);
         setEditingChat(null);
+    };
+
+    const handleTestSend = async () => {
+        if (!token || !editingChat || editingChat.chat_id === 0) return;
+        if (!testText.trim()) return;
+        setTestSending(true);
+        try {
+            await testSendMessage(
+                token,
+                selectedAccount,
+                editingChat.chat_id,
+                testText.trim(),
+                editingChat.message_thread_id,
+            );
+            addToastRef.current(tRef.current("test_send_success") || "测试消息已发送", "success");
+        } catch (err: any) {
+            addToastRef.current(formatErrorMessage("test_send_failed", err) || `发送失败`, "error");
+        } finally {
+            setTestSending(false);
+        }
     };
 
     const handleSubmit = async () => {
@@ -474,21 +532,208 @@ function CreateSignTaskContent() {
                                         + {t("add_sign_action")}
                                     </button>
                                 </div>
-                                <div className="max-h-[200px] overflow-y-auto space-y-3 custom-scrollbar pr-2">
+                                <div className="max-h-[350px] overflow-y-auto space-y-2 custom-scrollbar pr-1">
                                     {editingChat.actions.map((act, i) => (
-                                        <div key={i} className="flex gap-3 items-center animate-scale-in">
-                                            <div className="w-6 h-6 rounded-lg bg-white/5 flex items-center justify-center text-[10px] font-bold text-main/30">{i + 1}</div>
-                                            <input className="!h-9 !text-sm" value={act.text}
-                                                onChange={(e) => {
-                                                    const newActs = [...editingChat.actions];
-                                                    newActs[i] = { ...newActs[i], text: e.target.value };
-                                                    setEditingChat({ ...editingChat, actions: newActs });
-                                                }}
-                                            />
-                                            <button onClick={() => setEditingChat({ ...editingChat, actions: editingChat.actions.filter((_, idx) => idx !== i) })}
-                                                className="action-btn !w-9 !h-9 !text-rose-400">
-                                                <X weight="bold" />
-                                            </button>
+                                        <div key={i} className="flex flex-col gap-2 animate-scale-in p-3 rounded-xl bg-white/3 border border-white/5">
+                                            {/* 动作类型选择行 */}
+                                            <div className="flex gap-2 items-center">
+                                                <div className="w-5 h-5 rounded-md bg-white/5 flex items-center justify-center text-[9px] font-bold text-main/30 flex-shrink-0">{i + 1}</div>
+                                                <select className="!h-8 !text-xs !mb-0 flex-1"
+                                                    value={act.action}
+                                                    onChange={(e) => {
+                                                        const newActs = [...editingChat.actions];
+                                                        newActs[i] = defaultActionData(parseInt(e.target.value));
+                                                        setEditingChat({ ...editingChat, actions: newActs });
+                                                    }}
+                                                >
+                                                    {ACTION_TYPES.map(at => (
+                                                        <option key={at.value} value={at.value}>{t(at.labelKey)}</option>
+                                                    ))}
+                                                </select>
+                                                <button onClick={() => setEditingChat({ ...editingChat, actions: editingChat.actions.filter((_, idx) => idx !== i) })}
+                                                    className="action-btn !w-8 !h-8 !text-rose-400 flex-shrink-0">
+                                                    <X weight="bold" />
+                                                </button>
+                                            </div>
+
+                                            {/* 发送文本 / 点击按钮：文本输入 */}
+                                            {(act.action === 1 || act.action === 3) && (
+                                                <input className="!h-8 !text-xs !mb-0"
+                                                    value={act.text || ""}
+                                                    placeholder={act.action === 1 ? t("placeholder_msg") : t("placeholder_btn")}
+                                                    onChange={(e) => {
+                                                        const newActs = [...editingChat.actions];
+                                                        newActs[i] = { ...act, text: e.target.value };
+                                                        setEditingChat({ ...editingChat, actions: newActs });
+                                                    }}
+                                                />
+                                            )}
+
+                                            {/* 发送骰子：emoji 选择 */}
+                                            {act.action === 2 && (
+                                                <div className="flex gap-1.5 flex-wrap">
+                                                    {DICE_OPTIONS.map(emoji => (
+                                                        <button key={emoji} type="button"
+                                                            onClick={() => {
+                                                                const newActs = [...editingChat.actions];
+                                                                newActs[i] = { ...act, dice: emoji };
+                                                                setEditingChat({ ...editingChat, actions: newActs });
+                                                            }}
+                                                            className={`w-9 h-9 rounded-lg text-lg flex items-center justify-center transition-all ${act.dice === emoji ? "bg-[#8a3ffc]/30 ring-1 ring-[#8a3ffc]" : "bg-white/5 hover:bg-white/10"}`}
+                                                        >
+                                                            {emoji}
+                                                        </button>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                                            {/* AI 自动类动作：显示具体说明 */}
+                                            {[4, 5, 6, 7].includes(act.action) && (
+                                                <p className="text-[10px] text-[#b57dff]/60 italic px-1 leading-relaxed">
+                                                    {t(`ai_hint_${act.action}` as any)}
+                                                </p>
+                                            )}
+
+                                            {/* 类型 4：可选 question 字段 */}
+                                            {act.action === 4 && (
+                                                <div className="space-y-1">
+                                                    <label className="text-[9px] text-main/30 uppercase tracking-wider block">
+                                                        {t("ai_vision_question_label")}
+                                                    </label>
+                                                    <input
+                                                        className="!h-8 !text-xs !mb-0"
+                                                        value={act.question || ""}
+                                                        placeholder={t("ai_vision_question_placeholder")}
+                                                        onChange={(e) => {
+                                                            const newActs = [...editingChat.actions];
+                                                            newActs[i] = { ...act, question: e.target.value };
+                                                            setEditingChat({ ...editingChat, actions: newActs });
+                                                        }}
+                                                    />
+                                                </div>
+                                            )}
+
+                                            {/* 关键词监听 */}
+                                            {act.action === 8 && (
+                                                <div className="space-y-2">
+                                                    <div>
+                                                        <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("monitor_keywords")}</label>
+                                                        <textarea className="!text-xs !mb-0 resize-none w-full rounded-lg px-3 py-2 bg-white/5 border border-white/10 focus:border-[#8a3ffc]/50 outline-none" rows={3}
+                                                            placeholder={t("monitor_keywords_placeholder")}
+                                                            value={(act.keywords || []).join("\n")}
+                                                            onChange={(e) => {
+                                                                const keywords = e.target.value.split(/[\n,]/).map((k: string) => k.trim()).filter(Boolean);
+                                                                const newActs = [...editingChat.actions];
+                                                                newActs[i] = { ...act, keywords };
+                                                                setEditingChat({ ...editingChat, actions: newActs });
+                                                            }}
+                                                        />
+                                                    </div>
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <div>
+                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("match_mode")}</label>
+                                                            <select className="!h-8 !text-xs !mb-0 w-full"
+                                                                value={act.match_mode || "contains"}
+                                                                onChange={(e) => {
+                                                                    const newActs = [...editingChat.actions];
+                                                                    newActs[i] = { ...act, match_mode: e.target.value };
+                                                                    setEditingChat({ ...editingChat, actions: newActs });
+                                                                }}
+                                                            >
+                                                                <option value="contains">{t("match_contains")}</option>
+                                                                <option value="exact">{t("match_exact")}</option>
+                                                                <option value="regex">{t("match_regex")}</option>
+                                                            </select>
+                                                        </div>
+                                                        <div className="flex items-end pb-1">
+                                                            <label className="flex items-center gap-2 cursor-pointer">
+                                                                <input type="checkbox"
+                                                                    checked={act.ignore_case !== false}
+                                                                    onChange={(e) => {
+                                                                        const newActs = [...editingChat.actions];
+                                                                        newActs[i] = { ...act, ignore_case: e.target.checked };
+                                                                        setEditingChat({ ...editingChat, actions: newActs });
+                                                                    }}
+                                                                />
+                                                                <span className="text-xs">{t("ignore_case")}</span>
+                                                            </label>
+                                                        </div>
+                                                    </div>
+                                                    <div>
+                                                        <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("push_channel")}</label>
+                                                        <select className="!h-8 !text-xs !mb-0 w-full"
+                                                            value={act.push_channel || "telegram"}
+                                                            onChange={(e) => {
+                                                                const newActs = [...editingChat.actions];
+                                                                newActs[i] = { ...act, push_channel: e.target.value };
+                                                                setEditingChat({ ...editingChat, actions: newActs });
+                                                            }}
+                                                        >
+                                                            <option value="telegram">{t("push_telegram")}</option>
+                                                            <option value="forward">{t("push_forward")}</option>
+                                                            <option value="bark">{t("push_bark")}</option>
+                                                            <option value="custom">{t("push_custom")}</option>
+                                                            <option value="continue">{t("push_continue")}</option>
+                                                        </select>
+                                                    </div>
+                                                    {act.push_channel === "bark" && (
+                                                        <div>
+                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("bark_url_label")}</label>
+                                                            <input className="!h-8 !text-xs !mb-0"
+                                                                placeholder="https://api.day.app/yourkey/"
+                                                                value={act.bark_url || ""}
+                                                                onChange={(e) => {
+                                                                    const newActs = [...editingChat.actions];
+                                                                    newActs[i] = { ...act, bark_url: e.target.value };
+                                                                    setEditingChat({ ...editingChat, actions: newActs });
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                    {act.push_channel === "custom" && (
+                                                        <div>
+                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("custom_push_url")}</label>
+                                                            <input className="!h-8 !text-xs !mb-0"
+                                                                placeholder={t("custom_push_url_placeholder")}
+                                                                value={act.custom_url || ""}
+                                                                onChange={(e) => {
+                                                                    const newActs = [...editingChat.actions];
+                                                                    newActs[i] = { ...act, custom_url: e.target.value };
+                                                                    setEditingChat({ ...editingChat, actions: newActs });
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                    {act.push_channel === "forward" && (
+                                                        <div>
+                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("forward_chat_id_label")}</label>
+                                                            <input className="!h-8 !text-xs !mb-0"
+                                                                placeholder="-1001234567890"
+                                                                value={act.forward_chat_id || ""}
+                                                                onChange={(e) => {
+                                                                    const newActs = [...editingChat.actions];
+                                                                    newActs[i] = { ...act, forward_chat_id: e.target.value };
+                                                                    setEditingChat({ ...editingChat, actions: newActs });
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                    {act.push_channel === "continue" && (
+                                                        <div>
+                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("continue_chat_id_label")}</label>
+                                                            <input className="!h-8 !text-xs !mb-0"
+                                                                placeholder="-1001234567890"
+                                                                value={act.continue_chat_id || ""}
+                                                                onChange={(e) => {
+                                                                    const newActs = [...editingChat.actions];
+                                                                    newActs[i] = { ...act, continue_chat_id: e.target.value };
+                                                                    setEditingChat({ ...editingChat, actions: newActs });
+                                                                }}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            )}
                                         </div>
                                     ))}
                                     {editingChat.actions.length === 0 && (
@@ -497,6 +742,38 @@ function CreateSignTaskContent() {
                                 </div>
                             </div>
                         </div>
+
+                        {/* 测试发送区域 */}
+                        {editingChat.chat_id !== 0 && (
+                            <div className="px-6 pb-4 border-t border-white/5 pt-4 bg-black/5">
+                                <label className="text-[10px] text-main/30 uppercase tracking-wider block mb-2">
+                                    {t("test_send_label") || "测试发送消息"}
+                                </label>
+                                <div className="flex gap-2">
+                                    <input
+                                        className="!h-9 !text-xs !mb-0 flex-1"
+                                        value={testText}
+                                        onChange={(e) => setTestText(e.target.value)}
+                                        placeholder="/checkin"
+                                        onKeyDown={(e) => e.key === "Enter" && !testSending && handleTestSend()}
+                                    />
+                                    <button
+                                        onClick={handleTestSend}
+                                        disabled={testSending || !testText.trim()}
+                                        className="btn-secondary !h-9 !px-4 !text-xs font-bold flex items-center gap-1.5 flex-shrink-0 disabled:opacity-40"
+                                    >
+                                        {testSending
+                                            ? <Spinner size={12} className="animate-spin" />
+                                            : <Lightning size={12} weight="fill" />
+                                        }
+                                        {t("test_send_btn") || "发送测试"}
+                                    </button>
+                                </div>
+                                <p className="text-[9px] text-main/20 mt-1.5">
+                                    {t("test_send_hint")}
+                                </p>
+                            </div>
+                        )}
 
                         <footer className="p-6 border-t border-white/5 flex gap-4 bg-black/10">
                             <button onClick={() => setEditingChat(null)} className="btn-secondary flex-1">{t("cancel")}</button>

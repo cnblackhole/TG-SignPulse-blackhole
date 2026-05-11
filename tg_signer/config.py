@@ -218,6 +218,7 @@ class ChooseOptionByImageAction(SignAction):
     action: Literal[SupportAction.CHOOSE_OPTION_BY_IMAGE] = (
         SupportAction.CHOOSE_OPTION_BY_IMAGE
     )
+    question: Optional[str] = None  # 补充给 AI 的提示语，覆盖消息 caption 作为问题描述
 
 
 class ReplyByCalculationProblemAction(SignAction):

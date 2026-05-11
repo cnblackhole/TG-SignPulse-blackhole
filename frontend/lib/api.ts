@@ -643,6 +643,22 @@ export const setSignTaskEnabled = (
 export const getAccountChats = (token: string, accountName: string, forceRefresh?: boolean) =>
   request<ChatInfo[]>(`/sign-tasks/chats/${accountName}${forceRefresh ? '?force_refresh=true' : ''}`, {}, token);
 
+export const testSendMessage = (
+  token: string,
+  accountName: string,
+  chatId: number,
+  text: string,
+  messageThreadId?: number,
+) =>
+  request<{ success: boolean; message: string }>(
+    `/accounts/${accountName}/test-send`,
+    {
+      method: "POST",
+      body: JSON.stringify({ chat_id: chatId, text, message_thread_id: messageThreadId ?? null }),
+    },
+    token,
+  );
+
 export const searchAccountChats = (
   token: string,
   accountName: string,

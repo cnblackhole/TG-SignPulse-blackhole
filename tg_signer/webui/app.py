@@ -1,7 +1,10 @@
 import json
 import os
+import secrets
+import time
+from collections import deque
 from pathlib import Path
-from typing import Callable, Dict
+from typing import Callable, Deque, Dict
 
 from nicegui import app, ui
 from pydantic import TypeAdapter
@@ -628,15 +631,29 @@ def _auth_gate(container, auth_code: str, on_success: Callable[[], None]) -> Non
                 ).classes("w-full")
                 status = ui.label("").classes("text-sm text-negative")
 
+                # Rate limiting: track timestamps of failed attempts (per-session)
+                _fail_times: Deque[float] = deque()
+                _RATE_WINDOW = 60  # seconds
+                _MAX_ATTEMPTS = 5
+
                 def verify() -> None:
-                    # TODO: Security improvements needed
-                    # 1. Add rate limiting (e.g. max 5 attempts per minute) to prevent brute-force attacks.
-                    # 2. Use secrets.compare_digest(code, auth_code) to prevent timing attacks.
+                    now = time.monotonic()
+                    # Drop attempts outside the rolling window
+                    while _fail_times and now - _fail_times[0] > _RATE_WINDOW:
+                        _fail_times.popleft()
+                    if len(_fail_times) >= _MAX_ATTEMPTS:
+                        remaining = int(_RATE_WINDOW - (now - _fail_times[0])) + 1
+                        status.text = f"尝试次数过多，请 {remaining} 秒后重试"
+                        status.update()
+                        ui.notify("操作过于频繁，请稍后再试", type="warning")
+                        return
+
                     code = (code_input.value or "").strip()
                     if not code:
                         ui.notify("请输入授权码", type="warning")
                         return
-                    if code != auth_code:
+                    if not secrets.compare_digest(code, auth_code):
+                        _fail_times.append(time.monotonic())
                         status.text = "授权码错误，请重试"
                         status.update()
                         code_input.set_value("")

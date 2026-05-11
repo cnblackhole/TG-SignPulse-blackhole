@@ -496,6 +496,93 @@ def check_account_exists(
     return {"exists": exists, "account_name": account_name}
 
 
+class TestSendRequest(BaseModel):
+    chat_id: int
+    text: str
+    message_thread_id: Optional[int] = None
+
+
+class TestSendResponse(BaseModel):
+    success: bool
+    message: str
+
+
+@router.post("/{account_name}/test-send", response_model=TestSendResponse)
+async def test_send_message(
+    account_name: str,
+    request: TestSendRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """向指定 Chat 发送一条测试消息"""
+    from tg_signer.core import get_client
+    from backend.utils.account_locks import get_account_lock
+    from backend.utils.tg_session import (
+        get_account_profile,
+        get_account_session_string,
+        get_session_mode,
+        load_session_string_file,
+    )
+    from backend.utils.proxy import build_proxy_dict
+    from backend.utils.paths import get_session_dir
+
+    service = get_telegram_service()
+    if not service.account_exists(account_name):
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    proxy_dict = None
+    try:
+        profile = get_account_profile(account_name) or {}
+        proxy_value = profile.get("proxy")
+        if not proxy_value:
+            from backend.services.config import get_config_service
+            proxy_value = get_config_service().get_global_settings().get("global_proxy")
+        if proxy_value:
+            proxy_dict = build_proxy_dict(proxy_value)
+    except Exception:
+        pass
+
+    session_mode = get_session_mode()
+    session_string = None
+    in_memory = False
+    if session_mode == "string":
+        session_string = get_account_session_string(
+            account_name
+        ) or load_session_string_file(get_session_dir(), account_name)
+        if not session_string:
+            raise HTTPException(status_code=400, detail="账号 session 不存在或已失效")
+        in_memory = True
+
+    try:
+        client = get_client(
+            account_name,
+            proxy=proxy_dict,
+            workdir=get_session_dir(),
+            session_string=session_string,
+            in_memory=in_memory,
+            no_updates=True,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"初始化客户端失败: {e}")
+
+    try:
+        lock = get_account_lock(account_name)
+        async with lock:
+            if not getattr(client, "is_connected", False):
+                await client.connect()
+            kwargs = {}
+            if request.message_thread_id:
+                kwargs["message_thread_id"] = request.message_thread_id
+            await asyncio.wait_for(
+                client.send_message(request.chat_id, request.text, **kwargs),
+                timeout=15.0,
+            )
+        return TestSendResponse(success=True, message="发送成功")
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=408, detail="发送超时")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"发送失败: {e}")
+
+
 @router.patch("/{account_name}", response_model=AccountUpdateResponse)
 def update_account(
     account_name: str,

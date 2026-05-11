@@ -1920,9 +1920,11 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
                 if not options:
                     self.log("未找到可供点击的按钮", level="WARNING")
                     return False
-                question_text = (message.caption or message.text or "").strip()
-                if not question_text:
-                    question_text = "选择正确的选项"
+                question_text = (
+                    action.question
+                    or (message.caption or message.text or "").strip()
+                    or "选择正确的选项"
+                )
                 result_indexes = await self.get_ai_tools().choose_options_by_image(
                     image_bytes,
                     question_text,
