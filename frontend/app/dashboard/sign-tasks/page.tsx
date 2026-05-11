@@ -124,26 +124,23 @@ export default function SignTasksPage() {
         }
     };
 
-    const handleRun = async (taskName: string) => {
+    const handleRun = async (task: SignTask) => {
         if (!token) return;
+        const taskName = task.name;
+        const accountName = task.account_name;
 
-        const accountName = prompt(t("account_name_prompt"));
-        if (!accountName) return;
+        setRunningTask(taskName);
+        setRunLogs([]);
+        setIsDone(false);
 
         try {
-            setLoading(true);
-            setRunningTask(taskName);
-            setRunLogs([]);
-            setIsDone(false);
-
             // 建立 WebSocket 连接
+            // 开发环境：前端在 :3000，后端在 :8080；生产/Docker 同端口
             const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-            const host = window.location.host;
-            // 注意：这里需要确保后端地址正确，如果是在开发环境（localhost:3000 -> localhost:8000）可能需要处理
-            const wsParams = new URLSearchParams({
-                token,
-                account_name: accountName,
-            });
+            const host = window.location.port === "3000"
+                ? window.location.hostname + ":8080"
+                : window.location.host;
+            const wsParams = new URLSearchParams({ token, account_name: accountName });
             const wsUrl = `${protocol}//${host}/api/sign-tasks/ws/${taskName}?${wsParams.toString()}`;
             const ws = new WebSocket(wsUrl);
 
@@ -164,7 +161,7 @@ export default function SignTasksPage() {
 
             if (!result.success) {
                 if (result.error && result.error.includes("运行中")) {
-                    addToast(language === "zh" ? "该任务正在运行中，无法重复开始。正在为您展示其实时进度..." : "Task is currently running. Real-time logs are shown below.", "info");
+                    addToast(language === "zh" ? "该任务正在运行中，正在为您展示实时进度..." : "Task is currently running. Showing real-time logs.", "info");
                 } else {
                     addToast(result.error || t("task_run_failed"), "error");
                     setIsDone(true);
@@ -175,8 +172,6 @@ export default function SignTasksPage() {
         } catch (err: any) {
             addToast(formatErrorMessage("task_run_failed", err), "error");
             setRunningTask(null);
-        } finally {
-            setLoading(false);
         }
     };
 
@@ -380,7 +375,7 @@ export default function SignTasksPage() {
                                                 {togglingTask === task.name ? <Spinner className="animate-spin" size={14} /> : task.enabled ? <Pause weight="fill" size={14} /> : <Play weight="fill" size={14} />}
                                             </button>
                                             <button
-                                                onClick={() => handleRun(task.name)}
+                                                onClick={() => handleRun(task)}
                                                 disabled={loading}
                                                 className="action-btn !w-11 !h-11 !text-[#b57dff] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
                                                 title={t("manual_run") || "立即签到"}
@@ -388,7 +383,7 @@ export default function SignTasksPage() {
                                                 <Lightning weight="fill" size={14} />
                                             </button>
                                             <Link
-                                                href={`/dashboard/account-tasks/AccountTasksContent?name=${task.account_name}`}
+                                                href={`/dashboard/account-tasks?name=${task.account_name}`}
                                                 className={`action-btn !w-11 !h-11 ${loading ? 'pointer-events-none opacity-20' : ''}`}
                                                 title={t("edit")}
                                             >
@@ -444,7 +439,11 @@ export default function SignTasksPage() {
                                             <Clock weight="bold" size={14} />
                                             <span className="text-[10px] font-bold uppercase tracking-wider">{t("task_schedule")}</span>
                                         </div>
-                                        <span className="text-xs font-mono font-bold text-[#b57dff]">{task.sign_at}</span>
+                                        <span className="text-xs font-mono font-bold text-[#b57dff]">
+                                            {task.execution_mode === "range" && task.range_start && task.range_end
+                                                ? `${task.range_start} – ${task.range_end}`
+                                                : task.sign_at}
+                                        </span>
                                     </div>
                                     <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
                                         <div className="flex items-center gap-2 text-main/40">
@@ -486,7 +485,7 @@ export default function SignTasksPage() {
                                             {togglingTask === task.name ? <Spinner className="animate-spin" /> : task.enabled ? <Pause weight="fill" /> : <Play weight="fill" />}
                                         </button>
                                         <button
-                                            onClick={() => handleRun(task.name)}
+                                            onClick={() => handleRun(task)}
                                             disabled={loading}
                                             className="action-btn !text-[#b57dff] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
                                             title={t("manual_run") || "立即签到"}
@@ -494,7 +493,7 @@ export default function SignTasksPage() {
                                             <Lightning weight="fill" />
                                         </button>
                                         <Link
-                                            href={`/dashboard/account-tasks/AccountTasksContent?name=${task.account_name}`}
+                                            href={`/dashboard/account-tasks?name=${task.account_name}`}
                                             className={`action-btn ${loading ? 'pointer-events-none opacity-20' : ''}`}
                                             title={t("edit")}
                                         >
