@@ -438,7 +438,7 @@ export default function Dashboard() {
       openReloginDialog(acc);
       return;
     }
-    router.push(`/dashboard/account-tasks?name=${acc.name}`);
+    router.push(`/dashboard/sign-tasks`);
   }, [accountStatusMap, openReloginDialog, router]);
 
   const performQrLoginStart = useCallback(async (options?: { autoRefresh?: boolean; silent?: boolean; reason?: string }) => {
