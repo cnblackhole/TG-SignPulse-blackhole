@@ -1011,11 +1011,12 @@ class SignTaskService:
                 "random_seconds": config.get("random_seconds", 0),
                 "sign_interval": config.get("sign_interval", 1),
                 "chats": config.get("chats", []),
-                "enabled": True,
+                "enabled": bool(config.get("enabled", True)),
                 "last_run": last_run,
                 "execution_mode": config.get("execution_mode", "fixed"),
                 "range_start": config.get("range_start", ""),
                 "range_end": config.get("range_end", ""),
+                "notify_on_failure": config.get("notify_on_failure", True),
             }
         except Exception:
             return None
@@ -1048,7 +1049,7 @@ class SignTaskService:
                 "random_seconds": config.get("random_seconds", 0),
                 "sign_interval": config.get("sign_interval", 1),
                 "chats": config.get("chats", []),
-                "enabled": True,
+                "enabled": bool(config.get("enabled", True)),
                 "last_run": last_run,
                 "execution_mode": config.get("execution_mode", "fixed"),
                 "range_start": config.get("range_start", ""),
@@ -1107,6 +1108,7 @@ class SignTaskService:
             "range_start": range_start,
             "range_end": range_end,
             "notify_on_failure": notify_on_failure,
+            "enabled": True,
         }
 
         config_file = task_dir / "config.json"
@@ -1200,6 +1202,7 @@ class SignTaskService:
             "notify_on_failure": notify_on_failure
             if notify_on_failure is not None
             else existing.get("notify_on_failure", True),
+            "enabled": bool(existing.get("enabled", True)),
         }
 
         # 保存配置
@@ -1224,7 +1227,7 @@ class SignTaskService:
                 config.get("range_start")
                 if config.get("execution_mode") == "range"
                 else config["sign_at"],
-                enabled=True,
+                enabled=config["enabled"],
             )
         except Exception as e:
             msg = f"DEBUG: 更新调度任务失败: {e}"
@@ -1245,12 +1248,55 @@ class SignTaskService:
             "random_seconds": config["random_seconds"],
             "sign_interval": config["sign_interval"],
             "chats": config["chats"],
-            "enabled": True,
+            "enabled": bool(config.get("enabled", True)),
             "execution_mode": config.get("execution_mode", "fixed"),
             "range_start": config.get("range_start", ""),
             "range_end": config.get("range_end", ""),
             "notify_on_failure": config.get("notify_on_failure", True),
         }
+
+    def set_task_enabled(
+        self, task_name: str, account_name: Optional[str], enabled: bool
+    ) -> Dict[str, Any]:
+        """启用 / 停用一个签到任务（仅切换调度状态，不修改其它配置）"""
+        existing = self.get_task(task_name, account_name)
+        if not existing:
+            raise ValueError(f"任务 {task_name} 不存在")
+
+        acc_name = existing.get("account_name", "") or account_name or ""
+        task_dir = self._resolve_task_dir(task_name, acc_name)
+        if task_dir is None:
+            raise ValueError(f"任务 {task_name} 配置目录不存在")
+        config_file = task_dir / "config.json"
+        try:
+            with open(config_file, "r", encoding="utf-8") as f:
+                config = json.load(f)
+        except Exception as e:
+            raise ValueError(f"读取任务配置失败: {e}")
+
+        config["enabled"] = bool(enabled)
+        with open(config_file, "w", encoding="utf-8") as f:
+            json.dump(config, f, ensure_ascii=False, indent=2)
+
+        # Invalidate cache
+        self._tasks_cache = None
+
+        try:
+            from backend.scheduler import add_or_update_sign_task_job
+
+            cron_expr = (
+                config.get("range_start")
+                if config.get("execution_mode") == "range"
+                else config.get("sign_at", "")
+            )
+            add_or_update_sign_task_job(
+                acc_name, task_name, cron_expr, enabled=bool(enabled)
+            )
+        except Exception as e:
+            print(f"DEBUG: 切换调度任务状态失败: {e}")
+
+        existing["enabled"] = bool(enabled)
+        return existing
 
     def delete_task(self, task_name: str, account_name: Optional[str] = None) -> bool:
         """

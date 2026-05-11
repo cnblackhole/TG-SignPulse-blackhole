@@ -9,6 +9,7 @@ import {
     deleteSignTask,
     runSignTask,
     getSignTaskHistory,
+    setSignTaskEnabled,
     listAccounts,
     SignTask,
     SignTaskHistoryItem,
@@ -18,6 +19,7 @@ import {
     Plus,
     CaretLeft,
     Play,
+    Pause,
     PencilSimple,
     Trash,
     Spinner,
@@ -25,10 +27,15 @@ import {
     Clock,
     ChatCircleText,
     ListDashes,
+    FileText,
     ArrowClockwise,
     X,
     Copy,
-    ClipboardText
+    ClipboardText,
+    CheckCircle,
+    XCircle,
+    CaretRight,
+    CaretDown
 } from "@phosphor-icons/react";
 import { ToastContainer, useToast } from "../../../components/ui/toast";
 import { ThemeLanguageToggle } from "../../../components/ThemeLanguageToggle";
@@ -49,6 +56,10 @@ export default function SignTasksPage() {
     const [historyTask, setHistoryTask] = useState<SignTask | null>(null);
     const [historyLogs, setHistoryLogs] = useState<SignTaskHistoryItem[]>([]);
     const [historyLoading, setHistoryLoading] = useState(false);
+    const [logsTask, setLogsTask] = useState<SignTask | null>(null);
+    const [logsItem, setLogsItem] = useState<SignTaskHistoryItem | null>(null);
+    const [logsLoading, setLogsLoading] = useState(false);
+    const [togglingTask, setTogglingTask] = useState<string | null>(null);
 
     const addToastRef = useRef(addToast);
     const tRef = useRef(t);
@@ -181,6 +192,41 @@ export default function SignTasksPage() {
             addToast(formatErrorMessage("logs_fetch_failed", err), "error");
         } finally {
             setHistoryLoading(false);
+        }
+    };
+
+    const handleShowTaskLogs = async (task: SignTask) => {
+        if (!token) return;
+        setLogsTask(task);
+        setLogsItem(null);
+        setLogsLoading(true);
+        try {
+            const logs = await getSignTaskHistory(token, task.name, task.account_name, 1);
+            setLogsItem(logs[0] || null);
+        } catch (err: any) {
+            addToast(formatErrorMessage("logs_fetch_failed", err), "error");
+        } finally {
+            setLogsLoading(false);
+        }
+    };
+
+    const handleToggleEnabled = async (task: SignTask) => {
+        if (!token) return;
+        const next = !task.enabled;
+        try {
+            setTogglingTask(task.name);
+            await setSignTaskEnabled(token, task.name, task.account_name, next);
+            setTasks(prev => prev.map(p => p.name === task.name && p.account_name === task.account_name ? { ...p, enabled: next } : p));
+            addToast(
+                next
+                    ? (t("task_started") || "已开启定时签到").replace("{name}", task.name)
+                    : (t("task_stopped") || "已停止定时签到").replace("{name}", task.name),
+                "success"
+            );
+        } catch (err: any) {
+            addToast(formatErrorMessage("task_toggle_failed", err), "error");
+        } finally {
+            setTogglingTask(null);
         }
     };
 
@@ -326,12 +372,20 @@ export default function SignTasksPage() {
                                         </div>
                                         <div className="w-14 flex flex-col items-center gap-2 pt-[2px]">
                                             <button
+                                                onClick={() => handleToggleEnabled(task)}
+                                                disabled={loading || togglingTask === task.name}
+                                                className={`action-btn !w-11 !h-11 ${task.enabled ? '!text-amber-400 hover:bg-amber-500/10' : '!text-emerald-400 hover:bg-emerald-500/10'} disabled:opacity-20 disabled:cursor-not-allowed`}
+                                                title={task.enabled ? (t("stop_task") || "停止定时任务") : (t("start_task") || "开启定时任务")}
+                                            >
+                                                {togglingTask === task.name ? <Spinner className="animate-spin" size={14} /> : task.enabled ? <Pause weight="fill" size={14} /> : <Play weight="fill" size={14} />}
+                                            </button>
+                                            <button
                                                 onClick={() => handleRun(task.name)}
                                                 disabled={loading}
-                                                className="action-btn !w-11 !h-11 !text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
-                                                title={t("run")}
+                                                className="action-btn !w-11 !h-11 !text-[#b57dff] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                                title={t("manual_run") || "立即签到"}
                                             >
-                                                <Play weight="fill" size={14} />
+                                                <Lightning weight="fill" size={14} />
                                             </button>
                                             <Link
                                                 href={`/dashboard/account-tasks/AccountTasksContent?name=${task.account_name}`}
@@ -344,9 +398,17 @@ export default function SignTasksPage() {
                                                 onClick={() => handleShowTaskHistory(task)}
                                                 disabled={loading}
                                                 className="action-btn !w-11 !h-11 !text-[#8a3ffc] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
-                                                title={t("task_history_logs")}
+                                                title={t("task_history") || "签到历史"}
                                             >
                                                 <ListDashes weight="bold" size={14} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleShowTaskLogs(task)}
+                                                disabled={loading}
+                                                className="action-btn !w-11 !h-11 !text-sky-400 hover:bg-sky-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                                title={t("task_logs") || "执行日志"}
+                                            >
+                                                <FileText weight="bold" size={14} />
                                             </button>
                                             <button
                                                 onClick={() => handleDelete(task)}
@@ -416,12 +478,20 @@ export default function SignTasksPage() {
                                 <div className="mt-auto flex items-center justify-between bg-black/10 -mx-6 -mb-6 p-4 border-t border-white/5">
                                     <div className="flex items-center gap-2">
                                         <button
+                                            onClick={() => handleToggleEnabled(task)}
+                                            disabled={loading || togglingTask === task.name}
+                                            className={`action-btn ${task.enabled ? '!text-amber-400 hover:bg-amber-500/10' : '!text-emerald-400 hover:bg-emerald-500/10'} disabled:opacity-20 disabled:cursor-not-allowed`}
+                                            title={task.enabled ? (t("stop_task") || "停止定时任务") : (t("start_task") || "开启定时任务")}
+                                        >
+                                            {togglingTask === task.name ? <Spinner className="animate-spin" /> : task.enabled ? <Pause weight="fill" /> : <Play weight="fill" />}
+                                        </button>
+                                        <button
                                             onClick={() => handleRun(task.name)}
                                             disabled={loading}
-                                            className="action-btn !text-emerald-400 hover:bg-emerald-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
-                                            title={t("run")}
+                                            className="action-btn !text-[#b57dff] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                            title={t("manual_run") || "立即签到"}
                                         >
-                                            <Play weight="fill" />
+                                            <Lightning weight="fill" />
                                         </button>
                                         <Link
                                             href={`/dashboard/account-tasks/AccountTasksContent?name=${task.account_name}`}
@@ -436,9 +506,17 @@ export default function SignTasksPage() {
                                             onClick={() => handleShowTaskHistory(task)}
                                             disabled={loading}
                                             className="action-btn !text-[#8a3ffc] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
-                                            title={t("task_history_logs")}
+                                            title={t("task_history") || "签到历史"}
                                         >
                                             <ListDashes weight="bold" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleShowTaskLogs(task)}
+                                            disabled={loading}
+                                            className="action-btn !text-sky-400 hover:bg-sky-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                            title={t("task_logs") || "执行日志"}
+                                        >
+                                            <FileText weight="bold" />
                                         </button>
                                         <button
                                             onClick={() => handleDelete(task)}
@@ -523,16 +601,17 @@ export default function SignTasksPage() {
                 </div>
             )}
 
+            {/* 签到历史 Modal — 精简版：仅显示时间 + 状态 */}
             {historyTask && (
                 <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-fade-in">
-                    <div className="glass-panel w-full max-w-4xl h-[78vh] flex flex-col shadow-2xl border border-white/10 overflow-hidden animate-zoom-in">
+                    <div className="glass-panel w-full max-w-xl h-[78vh] flex flex-col shadow-2xl border border-white/10 overflow-hidden animate-zoom-in">
                         <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/2">
                             <div className="flex items-center gap-3">
                                 <div className="w-8 h-8 rounded-lg bg-[#8a3ffc]/20 flex items-center justify-center text-[#b57dff]">
                                     <ListDashes weight="bold" size={18} />
                                 </div>
                                 <h3 className="font-bold tracking-tight">
-                                    {t("task_history_logs_title").replace("{name}", historyTask.name)}
+                                    {(t("task_history_title") || "签到历史 · {name}").replace("{name}", historyTask.name)}
                                 </h3>
                             </div>
                             <button
@@ -542,50 +621,102 @@ export default function SignTasksPage() {
                                 <X weight="bold" />
                             </button>
                         </div>
-                        <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] leading-relaxed bg-black/20">
+                        <div className="flex-1 overflow-y-auto p-3 bg-black/20">
                             {historyLoading ? (
-                                <div className="flex items-center gap-2 text-main/30 italic">
+                                <div className="flex items-center gap-2 text-main/30 italic text-xs">
                                     <Spinner className="animate-spin" size={12} />
                                     {t("loading")}
                                 </div>
                             ) : historyLogs.length === 0 ? (
-                                <div className="text-main/30 italic">{t("task_history_empty")}</div>
+                                <div className="text-main/30 italic text-xs">{t("task_history_empty")}</div>
                             ) : (
-                                <div className="space-y-4">
+                                <div className="space-y-2">
                                     {historyLogs.map((log, i) => (
-                                        <div key={`${log.time}-${i}`} className="rounded-xl border border-white/5 bg-white/5 overflow-hidden">
-                                            <div className="flex justify-between items-center px-3 py-2 border-b border-white/5 text-[10px]">
-                                                <span className="text-main/30">
+                                        <div
+                                            key={`${log.time}-${i}`}
+                                            className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-white/5 bg-white/5 hover:bg-white/10 transition-colors"
+                                        >
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                {log.success ? (
+                                                    <CheckCircle weight="fill" size={16} className="text-emerald-400 shrink-0" />
+                                                ) : (
+                                                    <XCircle weight="fill" size={16} className="text-rose-400 shrink-0" />
+                                                )}
+                                                <span className="text-xs font-mono text-main/80 truncate">
                                                     {new Date(log.time).toLocaleString(language === "zh" ? "zh-CN" : "en-US")}
                                                 </span>
-                                                <span className={log.success ? "text-emerald-400" : "text-rose-400"}>
-                                                    {log.success ? t("success") : t("failure")}
-                                                </span>
                                             </div>
-                                            <div className="p-3 space-y-1">
-                                                {log.flow_logs && log.flow_logs.length > 0 ? (
-                                                    log.flow_logs.map((line, lineIndex) => (
-                                                        <div key={lineIndex} className="text-main/80 flex gap-2">
-                                                            <span className="text-main/20 select-none w-6 text-right">
-                                                                {(lineIndex + 1).toString().padStart(2, "0")}
-                                                            </span>
-                                                            <span className="break-all">{line}</span>
-                                                        </div>
-                                                    ))
-                                                ) : (
-                                                    <div className="text-main/50">
-                                                        {log.message || t("task_history_no_flow")}
-                                                    </div>
-                                                )}
-                                                {log.flow_truncated && (
-                                                    <div className="text-[10px] text-amber-400/90 mt-2">
-                                                        {t("task_history_truncated").replace("{count}", String(log.flow_line_count || 0))}
-                                                    </div>
-                                                )}
-                                            </div>
+                                            <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${log.success ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/10' : 'text-rose-400 border-rose-500/20 bg-rose-500/10'}`}>
+                                                {log.success ? t("success") : t("failure")}
+                                            </span>
                                         </div>
                                     ))}
                                 </div>
+                            )}
+                        </div>
+                        <div className="px-4 py-2 border-t border-white/5 bg-white/2 text-[10px] text-main/40 text-center">
+                            {t("task_history_hint") || "如需查看详细日志，请打开「执行日志」"}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 执行日志 Modal — 最近一次执行的完整 flow_logs */}
+            {logsTask && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="glass-panel w-full max-w-4xl h-[78vh] flex flex-col shadow-2xl border border-white/10 overflow-hidden animate-zoom-in">
+                        <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/2">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-sky-500/20 flex items-center justify-center text-sky-400">
+                                    <FileText weight="bold" size={18} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold tracking-tight">
+                                        {(t("task_logs_title") || "执行日志 · {name}").replace("{name}", logsTask.name)}
+                                    </h3>
+                                    {logsItem && (
+                                        <div className="text-[10px] font-mono text-main/40 mt-0.5">
+                                            {new Date(logsItem.time).toLocaleString(language === "zh" ? "zh-CN" : "en-US")} ·
+                                            <span className={`ml-1 ${logsItem.success ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                {logsItem.success ? t("success") : t("failure")}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => { setLogsTask(null); setLogsItem(null); }}
+                                className="action-btn !w-8 !h-8 hover:bg-white/10"
+                            >
+                                <X weight="bold" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] leading-relaxed bg-black/20">
+                            {logsLoading ? (
+                                <div className="flex items-center gap-2 text-main/30 italic">
+                                    <Spinner className="animate-spin" size={12} />
+                                    {t("loading")}
+                                </div>
+                            ) : !logsItem ? (
+                                <div className="text-main/30 italic">{t("task_logs_empty") || "暂无执行日志"}</div>
+                            ) : logsItem.flow_logs && logsItem.flow_logs.length > 0 ? (
+                                <div className="space-y-1">
+                                    {logsItem.flow_logs.map((line, lineIndex) => (
+                                        <div key={lineIndex} className="text-main/80 flex gap-2">
+                                            <span className="text-main/20 select-none w-6 text-right">
+                                                {(lineIndex + 1).toString().padStart(2, "0")}
+                                            </span>
+                                            <span className="break-all whitespace-pre-wrap">{line}</span>
+                                        </div>
+                                    ))}
+                                    {logsItem.flow_truncated && (
+                                        <div className="text-[10px] text-amber-400/90 mt-2">
+                                            {t("task_history_truncated").replace("{count}", String(logsItem.flow_line_count || 0))}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="text-main/50">{logsItem.message || t("task_history_no_flow")}</div>
                             )}
                         </div>
                     </div>

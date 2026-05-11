@@ -672,6 +672,21 @@ export const runSignTask = (token: string, name: string, accountName: string) =>
     method: "POST",
   }, token);
 
+export const setSignTaskEnabled = (
+  token: string,
+  name: string,
+  accountName: string,
+  enabled: boolean
+) =>
+  request<SignTask>(
+    `/sign-tasks/${name}/enabled?account_name=${accountName}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+    },
+    token
+  );
+
 export const getAccountChats = (token: string, accountName: string, forceRefresh?: boolean) =>
   request<ChatInfo[]>(`/sign-tasks/chats/${accountName}${forceRefresh ? '?force_refresh=true' : ''}`, {}, token);
 

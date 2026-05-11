@@ -333,6 +333,36 @@ async def delete_sign_task(
     return {"ok": True}
 
 
+class SetEnabledRequest(BaseModel):
+    enabled: bool
+
+
+@router.patch("/{task_name}/enabled", response_model=SignTaskOut)
+async def set_sign_task_enabled(
+    task_name: str,
+    payload: SetEnabledRequest,
+    account_name: Optional[str] = None,
+    current_user=Depends(get_current_user),
+):
+    """启用 / 停用定时签到任务（不立即执行）"""
+    try:
+        task = get_sign_task_service().set_task_enabled(
+            task_name, account_name, payload.enabled
+        )
+        # 同步调度器（双保险）
+        from backend.scheduler import sync_jobs
+
+        await sync_jobs()
+        return task
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        import traceback
+
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"切换任务状态失败: {e}")
+
+
 @router.post("/{task_name}/run", response_model=RunTaskResult)
 async def run_sign_task(
     task_name: str,
