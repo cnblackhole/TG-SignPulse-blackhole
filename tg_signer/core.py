@@ -1832,6 +1832,15 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         self, action: ReplyByCalculationProblemAction, message
     ):
         if message.text:
+            # Guard: skip bot timeout/error messages
+            import re as _re
+            for kw in self._BOT_ERROR_KEYWORDS:
+                if _re.search(kw, message.text, _re.IGNORECASE):
+                    self.log(
+                        f"消息内容疑似 Bot 超时/取消提示（匹配关键词: {kw!r}），跳过 AI 计算",
+                        level="WARNING",
+                    )
+                    return False
             self.log("检测到文本回复，尝试调用大模型进行计算题回答")
             self.log(f"问题: \n{message.text}")
             answer = await self.get_ai_tools().calculate_problem(message.text)
@@ -1864,11 +1873,28 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
         await self.send_message(message.chat.id, text)
         return True
 
+    # Keywords that indicate a bot timeout / session-cancelled message rather than a real problem
+    _BOT_ERROR_KEYWORDS = (
+        "没有获取到您的输入",
+        "会话状态自动取消",
+        "session.*cancel",
+        "超时",
+    )
+
     async def _click_button_by_calculation_problem(
         self, action: ClickButtonByCalculationProblemAction, message
     ):
         if not message.text:
             return False
+        # Guard: if the bot sent a timeout/error notice instead of a real problem, skip AI call
+        import re as _re
+        for kw in self._BOT_ERROR_KEYWORDS:
+            if _re.search(kw, message.text, _re.IGNORECASE):
+                self.log(
+                    f"消息内容疑似 Bot 超时/取消提示（匹配关键词: {kw!r}），跳过 AI 计算",
+                    level="WARNING",
+                )
+                return False
         self.log("检测到计算题，尝试计算并点击按钮")
         answer = await self.get_ai_tools().calculate_problem(message.text)
         answer = (answer or "").strip()

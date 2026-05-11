@@ -2,6 +2,7 @@ import base64
 import json
 import os
 import pathlib
+import re
 from typing import TYPE_CHECKING, Union
 
 import json_repair
@@ -274,7 +275,10 @@ class AITools:
             stream=False,
             temperature=temperature,
         )
-        return completion.choices[0].message.content.strip()
+        content = completion.choices[0].message.content or ""
+        # Strip <think>...</think> blocks produced by reasoning models (DeepSeek-R1, QwQ, etc.)
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        return content
 
     async def get_reply(
         self,
