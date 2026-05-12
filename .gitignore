@@ -132,3 +132,6 @@ frontend/out/
 frontend/tsconfig.tsbuildinfo
 frontend/.env.local
 
+
+# Claude Code worktrees (temporary per-session checkouts)
+.claude/worktrees/

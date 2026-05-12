@@ -16,6 +16,11 @@ concurrency:
   group: docker-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  # Opt into Node.js 24 now to silence deprecation warnings ahead of the
+  # June 2026 forced migration.
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   # ── PR: single-arch smoke test (fast, no QEMU, no push) ────────────────────
   test-build:
@@ -28,7 +33,7 @@ jobs:
         uses: docker/setup-buildx-action@v3
 
       - name: Build — amd64 smoke test
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: false
@@ -71,7 +76,7 @@ jobs:
           OWNER: ${{ github.repository_owner }}
 
       - name: Build and push
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
