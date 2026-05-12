@@ -102,7 +102,7 @@ touch /data/.probe && rm /data/.probe
 ## Common Environment Variables
 
 - `APP_SECRET_KEY`: panel secret key (strongly recommended)
-- `ADMIN_PASSWORD`: initial default password for the admin user (strongly recommended, otherwise defaults to insecure 'admin123')
+- `ADMIN_PASSWORD`: initial default password for the admin user (strongly recommended, otherwise defaults to insecure `admin123`)
 - `APP_HOST`: API listening interface (defaults to `127.0.0.1` for security; use `0.0.0.0` if exposing container globally)
 - `APP_DATA_DIR`: custom data directory (higher priority than panel setting)
 - `TG_PROXY`: Telegram connection proxy; you can also configure a global proxy in the panel
@@ -159,91 +159,61 @@ frontend/     Next.js management panel
 
 ## Changelog
 
+### 2026-05-12
+
+- **Fix task execution 500 error**: A local `logger` assignment inside the `except` block of `run_task_with_logs` caused an `UnboundLocalError` throughout the function; the redundant assignment has been removed.
+- **Range-mode catchup on task save**: Creating, editing, or re-enabling a range-mode task now immediately schedules a one-shot run if the current time falls within the window and the task has not run today.
+
 ### 2026-05-03
 
-- **Keyword Monitor Residency Fix**: Keyword monitor actions are now treated as Telegram-update-dependent tasks. The background monitor ensures account clients run with `no_updates=False` and recreates stale non-update clients, preventing saved monitor tasks from silently missing incoming messages.
-- **Keyword Continue Action Fix**: When a keyword match runs continue actions, button-click actions now wait for and poll recent messages for matching buttons. If no button is found, the runner no longer sends the button label as plain text.
-- **Check-in Button Flow Retries**: Normal sign/check-in button actions no longer fall back to sending button text. On button-click failure, the full script flow restarts from step 1, up to 3 attempts by default; tune with `SIGN_TASK_FLOW_RETRY_ATTEMPTS`.
-- **Full Project Verification**: Verified with `python -m compileall backend tg_signer tools test_client_cache.py test_keyword_monitor.py test_peer.py test_regex.py`, `pytest -q`, `python -m ruff check .`, `python -m pip check`, `git diff --check`, frontend `npm run lint`, and `npm run build`. This machine only has Python 3.14 and no Docker, so the production Python 3.12 container could not be started locally; the production Docker image still uses Python 3.12, and local development should continue to use Python `>=3.10,<3.14`.
+- **Keyword monitor stability fixes**: Background monitor now ensures the client runs with `no_updates=False` and rebuilds stale clients automatically; regex capture groups are now preferred as `{keyword}`, fixing redemption flows where callback confirmation was unavailable.
+- **Button-click flow retries**: On button-click failure, the full task flow restarts from step 1 instead of sending button text as plain message; up to 3 retries by default (configurable via `SIGN_TASK_FLOW_RETRY_ATTEMPTS`).
 
 ### 2026-04-29
 
-- **Keyword Monitor Continue Actions**: `Push Channel` now includes `Continue Actions`. After a keyword match, the monitor can continue with an action sequence, including send text, click button, dice, AI vision, and AI calculation. Text actions support quick variables such as `{keyword}`, `{message}`, `{sender}`, `{chat_title}`, and `{url}`.
-- **Telegram Bot Notification Refactor**: Telegram Bot notifications now live in their own Settings component, with a master switch, login notification switch, and task failure notification switch. When login notifications are enabled, every panel login sends the login IP to Telegram.
-- **Per-task Failure Notification Control**: Create/edit task dialogs now include a default-enabled `Failure Notify` checkbox beside the title. Disabling it prevents that task from sending Telegram failure notifications even when global failure notifications are enabled.
-- **Task Execution and Log Accuracy Fixes**: Fixed account cards getting stuck on "checking", moved account status checks to task execution time, ensured legacy tasks execute after peer preheating instead of being falsely reported as successful, and repaired common mojibake in historical logs.
-- **Legacy Sign Task Scheduling Restored**: The scheduler now supports the older `signs/<task>/config.json` layout again, so startup sync correctly discovers and schedules those tasks. Old tasks without `account_name` are matched to existing sessions when possible, without migrating or rewriting user configuration.
-- **More Reliable Button Clicking**: Button text matching now uses Unicode normalization and ignores symbols, spaces, and emoji. Matching works in both directions, inline button clicks have a `Message.click` fallback, and callback retry handling now covers timeout/connection errors up to 5 attempts.
-- **Scheduler Robustness Fix**: Sign task sync skips malformed entries that have no account or task name, avoiding invalid jobs while leaving healthy tasks unaffected.
-- **Frontend Build Config Fix**: The `/api` rewrite remains available for development, while production static export no longer declares ineffective rewrites, removing the Next.js build warning.
-- **Full Project Verification**: Verified with `python -m compileall backend tg_signer`, `pytest -q`, `python -m ruff check .`, `python -m pip check`, frontend `npm run lint`, and `npm run build`. The local machine only has Python 3.14 installed, where importing the Telegram runtime hits an upstream `pyrogram/kurigram` compatibility error; the production Docker image uses Python 3.12, and local development should use Python `>=3.10,<3.14`.
+- **Keyword continue actions**: `Push Channel` now includes a `Continue Actions` option; matched messages can trigger an action sequence with variable support (`{keyword}`, `{message}`, `{sender}`, etc.).
+- **Telegram Bot notification refactor**: Notifications split into a dedicated component with a master switch, login notification switch, and per-task failure notification control.
+- **Scheduling compatibility fix**: Restored support for the older `signs/<task>/config.json` layout; fixed account cards stuck on "checking".
 
 ### 2026-04-28
 
-- **Pre-task Account Status Check**: Sign tasks now verify the account session before execution. If the session is confirmed invalid, tasks for that account are skipped instead of being reported as successful.
-- **Invalid-session Notification and Persistent State**: Invalid accounts are persisted in account metadata and reported through the Telegram Bot notification settings. Repeated tasks under the same invalid state do not spam duplicate alerts.
-- **Dashboard Re-login Flow**: Account cards now show `Session Invalid` in the lower-left status area, and clicking an invalid account opens the re-login dialog directly instead of relying on the older "all tasks failed" heuristic.
-- **Task Log Encoding Fix**: Runtime logs, historical log reads, and account log exports now consistently use UTF-8 and repair common mojibake in older stored entries.
-- **Python Version Constraint**: Project metadata now requires Python `>=3.10,<3.14`, matching the Python 3.12 Docker image and preventing installs on incompatible interpreters.
-- **Project Health Check**: Verified with `compileall`, `pytest`, `ruff check .`, frontend `npm run lint`, and `npm run build`.
+- **Pre-task account status check**: Tasks now verify session validity before execution; invalid sessions are persisted and notified once without spamming repeated alerts.
+- **Dashboard re-login flow**: Account cards now show `Session Invalid` directly; clicking opens the re-login dialog immediately.
 
 ### 2026-04-27
 
-- **Keyword Monitor Action**: Keyword monitoring now lives in the account task ordered action sequence, so it can be configured per task, account, chat, and topic.
-- **Keyword Monitor Interaction**: Forwarding now lives inside the `Push Channel` dropdown. Forward Chat ID/topic fields only appear for Forward, while Bark and custom URL fields only appear for their own channels.
-- **Action Sequence Layout**: Each action now uses a clearer `index + action type + parameters + delete` structure, with keyword monitor parameters grouped into a compact two-column layout.
-- **Target Chat Form Layout**: `Topic / Thread ID (Optional)` now sits on the same row as manual Chat ID in both create and edit dialogs.
-- **Matched Message Forwarding**: Matched messages can be forwarded to a target Chat ID, with optional topic/thread ID support.
+- **Keyword monitor as action**: Keyword monitoring is now an action in the ordered sequence, configurable per task, account, chat, and topic; push channel parameters are shown on demand.
 
 ### 2026-04-26
 
-- **Telegram Topic (Thread) Support**: Tasks can now run inside a specific topic of a specific group. Sent messages include `message_thread_id`, and incoming replies from other topics are ignored.
-- **Global Proxy Fallback**: Added a Global Proxy setting. Login, chat refresh, scheduled/manual task execution, and legacy CLI execution use it whenever an account does not have its own proxy.
-- **Clipboard Bulk Import/Export**: The account task page now has top-right actions to export all tasks to the clipboard and paste-import tasks. Imports skip duplicates and attach imported tasks to the current account.
-- **Convenient Re-login Experience**: The account edit modal now includes a Re-login action with complete Chinese/English labels, allowing users to refresh an existing account session directly.
-- **Telegram Bot Notifications**: System Settings now include notification enablement, Bot Token, and notification Chat ID. Failed tasks send account, task, error, and recent log context; keyword matches can also use the same Bot API channel.
-- **Dashboard Invalid-Session Hint**: If every task under an account failed in its latest run, the dashboard marks the account as session invalid and guides users to re-login.
-- **Frontend Task Log Improvements**: Per-run task flow logs retain more lines and are shown directly in the frontend task history.
-- **Project Health Cleanup**: Fixed simple Ruff findings and made root debug scripts safe for pytest collection.
+- **Telegram Topic (Thread) support**: Tasks can now run inside a specific group topic; messages are sent with `message_thread_id` and replies from other topics are filtered out.
+- **Global proxy fallback and clipboard bulk import/export**: Accounts without a dedicated proxy fall back to the global proxy; tasks can be exported/imported via clipboard with automatic duplicate skipping.
+- **Telegram Bot failure notifications**: Failed tasks push account, task, error, and recent log context to a configured Bot.
 
 ### 2026-03-20
-- **SQLite Database Deadlock Fixed**: Hardened the Pyrogram client lifecycle cache, completely eliminating the overlapping `database is locked` errors previously caused by concurrent UI polling overlapping with worker queues. Background executions now smoothly multiplex SQLite connections, resulting in significantly lower I/O and zero queuing deadlocks.
-- **Task Prevention UI**: Improved the frontend with protection logic against double-calling tasks. If the user accidentally clicks 'Run' on an actively executing task, the app will gracefully block the action, display a warning that the task is currently in progress, and immediately pivot to streaming its live logs instead.
+
+- **SQLite deadlock fix**: Hardened the Pyrogram client lifecycle cache to eliminate `database is locked` errors under high concurrency.
+- **Duplicate run prevention**: Clicking "Run" on an already-running task shows a warning and switches to the live log stream instead of triggering a second run.
 
 ### 2026-03-19
 
-- **Account Status Display Fix**: Fixed a frontend string-matching bug where completely normal accounts were erroneously displayed as "Account Invalid".
-- **Old Account Execution Fix**: Resolved critical `PeerIdInvalid` execution crashes for older local `.session` file-based accounts. The task engine was mistakenly defaulting them into an in-memory session mode overriding their reliable local SQLite database, resulting in a loss of tracked peers. Now, caching and cross-account task copying are highly stable.
-- **Bot Final Reply Extraction**: Enhanced log parsing engine. During successful message exchanges, the engine automatically extracts the final reply text from the target signed-bot and presents it beautifully in both the frontend run logs and execution table, keeping the UI intact. 
-- **Code Linter**: Ran full project health & Ruff linter checks, safely pruning dead code.
+- **Account status display fix**: Fixed a frontend string-matching bug that incorrectly showed healthy accounts as invalid.
+- **Old account PeerIdInvalid fix**: Fixed `.session` file accounts being forced into in-memory mode, causing `PeerIdInvalid` failures.
 
 ### 2026-03-12
-- Core stability fix: Fixed a severe memory leak and high network I/O issue caused by Pyrogram timeout & `FloodWait` infinite retry loops leading to async lock starvation and unretrieved task exceptions.
+
+- **Core stability fix**: Fixed async lock starvation and memory leaks caused by Pyrogram timeout and `FloodWait` infinite retry loops.
 
 ### 2026-03-06
 
-- Action sequence order optimized: `Send Text -> Click Text Button -> Send Dice -> AI Vision -> AI Calculate`.
-- AI actions refined: `AI Vision` and `AI Calculate` now support inline sub-modes (send text / click button).
-- Task copy/paste UX improved:
-  - Copy now opens a config dialog with one-click copy.
-  - Top-right paste import tries clipboard first; falls back to manual paste dialog when unavailable.
-- Task log dialog improved: now shows `Task: XXX succeeded/failed` and the latest bot reply.
-- Dashboard status checks improved on page open/refresh to reduce false "Check Failed".
-- Mobile/layout polish: task card action area is more compact, action-row control heights are unified.
-- UTF-8 export fix: resolved task copy/export errors with emoji content.
-- Container permission compatibility improved with `/data` owner UID/GID adaptation.
+- Action sequence order optimized; AI Vision/Calculate now support inline sub-modes; task copy opens a dialog with one-click copy; UTF-8 export fix for emoji content.
 
 ### 2026-03-01
 
-- AI action upgrade, AI config save fix, and phone code login changed to manual confirmation.
-- Reduced frequent `TimeoutError` and `429 transport flood` logs.
-- Long-running stability and memory optimizations.
-- Added custom data directory support.
+- AI action upgrade; reduced `TimeoutError` / `429` log noise; long-running stability and memory improvements; added custom data directory support.
 
 ## Acknowledgements
 
-This project is heavily refactored and extended based on the original project:
-
-- Original project: [tg-signer](https://github.com/amchii/tg-signer) by [amchii](https://github.com/amchii)
+This project is forked from [akasls/TG-SignPulse](https://github.com/akasls/TG-SignPulse), which itself is based on [amchii/tg-signer](https://github.com/amchii/tg-signer). Thanks to both authors for their open-source work.
 
 Tech stack: FastAPI, Uvicorn, APScheduler, Pyrogram/Kurigram, Next.js, Tailwind CSS, OpenAI SDK.

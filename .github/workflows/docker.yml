@@ -75,6 +75,14 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
 
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: luochend
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: luochend/tg-signpulse
+          readme-filepath: ./README.md
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
