@@ -12,7 +12,7 @@ import {
     listAccounts,
     getAccountChats,
     searchAccountChats,
-    testSendMessage,
+    testRunChat,
     AccountInfo,
     ChatInfo,
     SignTaskChat,
@@ -25,7 +25,9 @@ import {
     Trash,
     Spinner,
     Lightning,
-    Check
+    Check,
+    PencilSimple,
+    Play,
 } from "@phosphor-icons/react";
 import { ThemeLanguageToggle } from "../../../../components/ThemeLanguageToggle";
 import { useLanguage } from "../../../../context/LanguageContext";
@@ -88,9 +90,8 @@ function CreateSignTaskContent() {
     const [chatSearchResults, setChatSearchResults] = useState<ChatInfo[]>([]);
     const [chatSearchLoading, setChatSearchLoading] = useState(false);
 
-    // 测试发送
-    const [testText, setTestText] = useState("/checkin");
-    const [testSending, setTestSending] = useState(false);
+    // 测试执行
+    const [testingChatIdx, setTestingChatIdx] = useState<number | null>(null);
 
     // 用 ref 稳定回调，避免 addToast/t 变化时触发 useEffect 无限重跑
     const addToastRef = useRef(addToast);
@@ -115,7 +116,8 @@ function CreateSignTaskContent() {
         return true;
     }, []);
 
-    // 当前编辑的 Chat
+    // 当前编辑的 Chat（null=新建，数字=编辑已有索引）
+    const [editingChatIndex, setEditingChatIndex] = useState<number | null>(null);
     const [editingChat, setEditingChat] = useState<{
         chat_id: number;
         name: string;
@@ -226,13 +228,17 @@ function CreateSignTaskContent() {
             setChatSearch("");
             setChatSearchResults([]);
             setChatSearchLoading(false);
-            setTestText("/checkin");
-            setTestSending(false);
         }
     }, [editingChat]);
 
     const handleAddChat = () => {
+        setEditingChatIndex(null);
         setEditingChat({ chat_id: 0, name: "", message_thread_id: undefined, actions: [], action_interval: 1 });
+    };
+
+    const handleEditChat = (idx: number) => {
+        setEditingChatIndex(idx);
+        setEditingChat({ ...chats[idx] });
     };
 
     const handleSaveChat = () => {
@@ -244,27 +250,39 @@ function CreateSignTaskContent() {
             addToastRef.current(tRef.current("first_action_must_be_send"), "error");
             return;
         }
-        setChats([...chats, editingChat]);
+        if (editingChatIndex !== null) {
+            const updated = [...chats];
+            updated[editingChatIndex] = editingChat;
+            setChats(updated);
+        } else {
+            setChats([...chats, editingChat]);
+        }
         setEditingChat(null);
+        setEditingChatIndex(null);
     };
 
-    const handleTestSend = async () => {
-        if (!token || !editingChat || editingChat.chat_id === 0) return;
-        if (!testText.trim()) return;
-        setTestSending(true);
+    const handleTestChat = async (idx: number) => {
+        if (!token) return;
+        setTestingChatIdx(idx);
+        const chat = chats[idx];
         try {
-            await testSendMessage(
-                token,
-                selectedAccount,
-                editingChat.chat_id,
-                testText.trim(),
-                editingChat.message_thread_id,
-            );
-            addToastRef.current(tRef.current("test_send_success") || "测试消息已发送", "success");
+            const res = await testRunChat(token, selectedAccount, {
+                chat_id: chat.chat_id,
+                name: chat.name,
+                actions: chat.actions,
+                action_interval: chat.action_interval,
+                message_thread_id: chat.message_thread_id,
+                delete_after: chat.delete_after,
+            });
+            if (res.success) {
+                addToastRef.current(tRef.current("test_chat_success") || "测试执行完成", "success");
+            } else {
+                addToastRef.current(`${tRef.current("test_chat_failed") || "测试执行失败"}: ${res.message}`, "error");
+            }
         } catch (err: any) {
-            addToastRef.current(formatErrorMessage("test_send_failed", err) || `发送失败`, "error");
+            addToastRef.current(formatErrorMessage("test_chat_failed", err) || "测试执行失败", "error");
         } finally {
-            setTestSending(false);
+            setTestingChatIdx(null);
         }
     };
 
@@ -436,9 +454,29 @@ function CreateSignTaskContent() {
                                                 </div>
                                             </div>
                                         </div>
-                                        <button onClick={() => setChats(chats.filter((_, i) => i !== idx))} className="action-btn !text-rose-400 hover:!bg-rose-500/10">
-                                            <Trash weight="bold" />
-                                        </button>
+                                        <div className="flex items-center gap-1">
+                                            <button
+                                                onClick={() => handleTestChat(idx)}
+                                                disabled={testingChatIdx !== null}
+                                                title={t("test_chat_btn") || "测试执行"}
+                                                className="action-btn !text-emerald-400 hover:!bg-emerald-500/10 disabled:opacity-40"
+                                            >
+                                                {testingChatIdx === idx
+                                                    ? <Spinner size={16} className="animate-spin" />
+                                                    : <Play weight="fill" />
+                                                }
+                                            </button>
+                                            <button
+                                                onClick={() => handleEditChat(idx)}
+                                                title={t("edit_chat_btn") || "编辑"}
+                                                className="action-btn !text-[#b57dff] hover:!bg-[#8a3ffc]/10"
+                                            >
+                                                <PencilSimple weight="bold" />
+                                            </button>
+                                            <button onClick={() => setChats(chats.filter((_, i) => i !== idx))} className="action-btn !text-rose-400 hover:!bg-rose-500/10">
+                                                <Trash weight="bold" />
+                                            </button>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
@@ -465,9 +503,15 @@ function CreateSignTaskContent() {
                         <header className="p-6 border-b border-white/5 flex justify-between items-center bg-black/5">
                             <h2 className="text-xl font-bold flex items-center gap-3">
                                 <div className="p-2 bg-[#8a3ffc]/10 rounded-lg text-[#b57dff]">
-                                    <Plus weight="bold" size={20} />
+                                    {editingChatIndex !== null
+                                        ? <PencilSimple weight="bold" size={20} />
+                                        : <Plus weight="bold" size={20} />
+                                    }
                                 </div>
-                                {t("configure_target_chat")}
+                                {editingChatIndex !== null
+                                    ? (t("edit_chat_btn") || "编辑目标聊天")
+                                    : t("configure_target_chat")
+                                }
                             </h2>
                             <button onClick={() => setEditingChat(null)} className="action-btn !w-8 !h-8"><X weight="bold" /></button>
                         </header>
@@ -743,42 +787,11 @@ function CreateSignTaskContent() {
                             </div>
                         </div>
 
-                        {/* 测试发送区域 */}
-                        {editingChat.chat_id !== 0 && (
-                            <div className="px-6 pb-4 border-t border-white/5 pt-4 bg-black/5">
-                                <label className="text-[10px] text-main/30 uppercase tracking-wider block mb-2">
-                                    {t("test_send_label") || "测试发送消息"}
-                                </label>
-                                <div className="flex gap-2">
-                                    <input
-                                        className="!h-9 !text-xs !mb-0 flex-1"
-                                        value={testText}
-                                        onChange={(e) => setTestText(e.target.value)}
-                                        placeholder="/checkin"
-                                        onKeyDown={(e) => e.key === "Enter" && !testSending && handleTestSend()}
-                                    />
-                                    <button
-                                        onClick={handleTestSend}
-                                        disabled={testSending || !testText.trim()}
-                                        className="btn-secondary !h-9 !px-4 !text-xs font-bold flex items-center gap-1.5 flex-shrink-0 disabled:opacity-40"
-                                    >
-                                        {testSending
-                                            ? <Spinner size={12} className="animate-spin" />
-                                            : <Lightning size={12} weight="fill" />
-                                        }
-                                        {t("test_send_btn") || "发送测试"}
-                                    </button>
-                                </div>
-                                <p className="text-[9px] text-main/20 mt-1.5">
-                                    {t("test_send_hint")}
-                                </p>
-                            </div>
-                        )}
-
                         <footer className="p-6 border-t border-white/5 flex gap-4 bg-black/10">
                             <button onClick={() => setEditingChat(null)} className="btn-secondary flex-1">{t("cancel")}</button>
                             <button onClick={handleSaveChat} className="btn-gradient flex-1 flex items-center justify-center gap-2">
-                                <Check weight="bold" />{t("confirm_add")}
+                                <Check weight="bold" />
+                                {editingChatIndex !== null ? (t("save_changes") || "保存修改") : t("confirm_add")}
                             </button>
                         </footer>
                     </div>

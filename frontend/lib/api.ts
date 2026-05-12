@@ -659,6 +659,27 @@ export const testSendMessage = (
     token,
   );
 
+export const testRunChat = (
+  token: string,
+  accountName: string,
+  chat: {
+    chat_id: number;
+    name?: string;
+    actions: any[];
+    action_interval?: number;
+    message_thread_id?: number;
+    delete_after?: number;
+  },
+) =>
+  request<{ success: boolean; message: string; logs: string[] }>(
+    `/accounts/${accountName}/test-chat`,
+    {
+      method: "POST",
+      body: JSON.stringify(chat),
+    },
+    token,
+  );
+
 export const searchAccountChats = (
   token: string,
   accountName: string,

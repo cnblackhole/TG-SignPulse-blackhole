@@ -507,6 +507,69 @@ class TestSendResponse(BaseModel):
     message: str
 
 
+class TestChatRequest(BaseModel):
+    chat_id: int
+    name: Optional[str] = None
+    actions: list
+    action_interval: float = 1
+    message_thread_id: Optional[int] = None
+    delete_after: Optional[int] = None
+
+
+class TestChatResponse(BaseModel):
+    success: bool
+    message: str
+    logs: list[str] = []
+
+
+def _get_account_client_params(account_name: str):
+    """返回 (session_dir, session_string, use_in_memory, proxy_dict, api_id, api_hash)"""
+    import os
+    from backend.core.config import get_settings
+    from backend.utils.account_locks import get_account_lock  # noqa: F401 (re-exported)
+    from backend.utils.tg_session import (
+        get_account_proxy,
+        get_account_session_string,
+        get_session_mode,
+        load_session_string_file,
+    )
+    from backend.utils.proxy import build_proxy_dict
+    from backend.services.config import get_config_service
+
+    settings = get_settings()
+    session_dir = settings.resolve_session_dir()
+
+    proxy_value = get_account_proxy(account_name)
+    if not proxy_value:
+        try:
+            proxy_value = get_config_service().get_global_settings().get("global_proxy")
+        except Exception:
+            proxy_value = None
+    proxy_dict = build_proxy_dict(proxy_value) if proxy_value else None
+
+    session_mode = get_session_mode()
+    session_string = None
+    use_in_memory = False
+    if session_mode == "string":
+        session_string = (
+            get_account_session_string(account_name)
+            or load_session_string_file(session_dir, account_name)
+        )
+        use_in_memory = bool(session_string)
+
+    tg_config = get_config_service().get_telegram_config()
+    api_id = os.getenv("TG_API_ID") or tg_config.get("api_id")
+    api_hash = os.getenv("TG_API_HASH") or tg_config.get("api_hash")
+    try:
+        api_id = int(api_id) if api_id is not None else None
+    except (TypeError, ValueError):
+        api_id = None
+    if isinstance(api_hash, str):
+        api_hash = api_hash.strip()
+
+    return session_dir, session_string, use_in_memory, proxy_dict, api_id, api_hash
+
+
 @router.post("/{account_name}/test-send", response_model=TestSendResponse)
 async def test_send_message(
     account_name: str,
@@ -516,47 +579,22 @@ async def test_send_message(
     """向指定 Chat 发送一条测试消息"""
     from tg_signer.core import get_client
     from backend.utils.account_locks import get_account_lock
-    from backend.utils.tg_session import (
-        get_account_profile,
-        get_account_session_string,
-        get_session_mode,
-        load_session_string_file,
-    )
-    from backend.utils.proxy import build_proxy_dict
-    from backend.utils.paths import get_session_dir
 
     service = get_telegram_service()
     if not service.account_exists(account_name):
         raise HTTPException(status_code=404, detail="账号不存在")
 
-    proxy_dict = None
-    try:
-        profile = get_account_profile(account_name) or {}
-        proxy_value = profile.get("proxy")
-        if not proxy_value:
-            from backend.services.config import get_config_service
-            proxy_value = get_config_service().get_global_settings().get("global_proxy")
-        if proxy_value:
-            proxy_dict = build_proxy_dict(proxy_value)
-    except Exception:
-        pass
-
-    session_mode = get_session_mode()
-    session_string = None
-    in_memory = False
-    if session_mode == "string":
-        session_string = get_account_session_string(
-            account_name
-        ) or load_session_string_file(get_session_dir(), account_name)
-        if not session_string:
-            raise HTTPException(status_code=400, detail="账号 session 不存在或已失效")
-        in_memory = True
+    session_dir, session_string, in_memory, proxy_dict, _api_id, _api_hash = (
+        _get_account_client_params(account_name)
+    )
+    if in_memory and not session_string:
+        raise HTTPException(status_code=400, detail="账号 session 不存在或已失效")
 
     try:
         client = get_client(
             account_name,
             proxy=proxy_dict,
-            workdir=get_session_dir(),
+            workdir=str(session_dir),
             session_string=session_string,
             in_memory=in_memory,
             no_updates=True,
@@ -581,6 +619,127 @@ async def test_send_message(
         raise HTTPException(status_code=408, detail="发送超时")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"发送失败: {e}")
+
+
+@router.post("/{account_name}/test-chat", response_model=TestChatResponse)
+async def test_run_chat(
+    account_name: str,
+    request: TestChatRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """执行目标聊天配置的实际动作序列（测试用）"""
+    import logging
+    from tg_signer.config import SignChatV3
+    from backend.utils.account_locks import get_account_lock
+    from backend.utils.tg_session import get_global_semaphore
+    from backend.services.sign_tasks import BackendUserSigner, TaskLogHandler
+    from pyrogram import filters as tg_filters
+    from pyrogram.handlers import EditedMessageHandler, MessageHandler
+
+    service = get_telegram_service()
+    if not service.account_exists(account_name):
+        raise HTTPException(status_code=404, detail="账号不存在")
+
+    try:
+        chat = SignChatV3.parse_obj({
+            "chat_id": request.chat_id,
+            "name": request.name,
+            "actions": request.actions,
+            "action_interval": request.action_interval,
+            "message_thread_id": request.message_thread_id,
+            "delete_after": request.delete_after,
+        })
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"动作配置解析失败: {e}")
+
+    session_dir, session_string, use_in_memory, proxy_dict, api_id, api_hash = (
+        _get_account_client_params(account_name)
+    )
+    if use_in_memory and not session_string:
+        raise HTTPException(status_code=400, detail="账号 session 不存在或已失效")
+    if not api_id or not api_hash:
+        raise HTTPException(status_code=400, detail="未配置 Telegram API ID 或 API Hash")
+
+    logs: list[str] = []
+    tg_logger = logging.getLogger("tg-signer")
+    log_handler = TaskLogHandler(logs)
+    log_handler.setLevel(logging.INFO)
+    log_handler.setFormatter(logging.Formatter("%(asctime)s - %(message)s"))
+    tg_logger.addHandler(log_handler)
+
+    try:
+        from backend.core.config import get_settings as _get_settings
+        _settings = _get_settings()
+
+        signer = BackendUserSigner(
+            task_name="__test__",
+            session_dir=str(session_dir),
+            account=account_name,
+            workdir=str(_settings.resolve_workdir()),
+            proxy=proxy_dict,
+            session_string=session_string,
+            in_memory=use_in_memory,
+            api_id=api_id,
+            api_hash=api_hash,
+            no_updates=not chat.requires_updates,
+        )
+
+        if chat.requires_ai:
+            signer.ensure_ai_cfg()
+
+        lock = get_account_lock(account_name)
+        async with lock:
+            started_here = False
+            if not getattr(signer.app, "is_connected", False):
+                await signer.app.start()
+                started_here = True
+
+            message_handler_ref = None
+            edited_handler_ref = None
+            try:
+                signer.context = signer.ensure_ctx()
+                signer.context.sign_chats[chat.chat_id].append(chat)
+
+                if chat.requires_updates:
+                    message_handler_ref = signer.app.add_handler(
+                        MessageHandler(
+                            signer.on_message,
+                            tg_filters.chat([chat.chat_id]),
+                        )
+                    )
+                    edited_handler_ref = signer.app.add_handler(
+                        EditedMessageHandler(
+                            signer.on_edited_message,
+                            tg_filters.chat([chat.chat_id]),
+                        )
+                    )
+
+                async with get_global_semaphore():
+                    await asyncio.wait_for(
+                        signer.sign_a_chat(chat),
+                        timeout=120.0,
+                    )
+
+            finally:
+                for ref in (message_handler_ref, edited_handler_ref):
+                    if ref:
+                        try:
+                            signer.app.remove_handler(*ref)
+                        except Exception:
+                            pass
+                if started_here:
+                    try:
+                        await signer.app.stop()
+                    except Exception:
+                        pass
+
+        return TestChatResponse(success=True, message="测试执行完成", logs=logs)
+    except asyncio.TimeoutError:
+        return TestChatResponse(success=False, message="执行超时", logs=logs)
+    except Exception as e:
+        return TestChatResponse(success=False, message=f"执行失败: {e}", logs=logs)
+    finally:
+        tg_logger.removeHandler(log_handler)
 
 
 @router.patch("/{account_name}", response_model=AccountUpdateResponse)
