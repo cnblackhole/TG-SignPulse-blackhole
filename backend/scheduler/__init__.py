@@ -137,7 +137,7 @@ async def _job_maintenance() -> None:
         db.close()
 
 
-def _schedule_range_catchup(account_name: str, task_name: str, st: dict) -> None:
+def schedule_range_catchup(account_name: str, task_name: str, st: dict) -> None:
     """
     如果当前时刻处于 range 窗口内且今日尚未执行，添加一次性立即任务。
     用于解决"窗口已开始后才创建/启动任务，当天不执行"的问题。
@@ -281,7 +281,7 @@ async def sync_jobs() -> None:
 
                 # 若 range 模式且当前处于窗口内、今日未执行，补一次立即执行
                 if st.get("execution_mode") == "range":
-                    _schedule_range_catchup(account_name, task_name, st)
+                    schedule_range_catchup(account_name, task_name, st)
             except Exception as e:
                 logger.error("Error scheduling sign task %s: %s", task_name, e)
 

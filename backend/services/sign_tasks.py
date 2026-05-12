@@ -1117,7 +1117,7 @@ class SignTaskService:
         self._tasks_cache = None
 
         try:
-            from backend.scheduler import add_or_update_sign_task_job
+            from backend.scheduler import add_or_update_sign_task_job, schedule_range_catchup
 
             add_or_update_sign_task_job(
                 account_name,
@@ -1125,6 +1125,8 @@ class SignTaskService:
                 range_start if execution_mode == "range" else sign_at,
                 enabled=True,
             )
+            if execution_mode == "range":
+                schedule_range_catchup(account_name, task_name, config)
         except Exception as e:
             logger.warning("更新调度任务失败: %s", e)
 
@@ -1207,7 +1209,7 @@ class SignTaskService:
         self._tasks_cache = None
 
         try:
-            from backend.scheduler import add_or_update_sign_task_job
+            from backend.scheduler import add_or_update_sign_task_job, schedule_range_catchup
 
             add_or_update_sign_task_job(
                 config["account_name"],
@@ -1217,6 +1219,8 @@ class SignTaskService:
                 else config["sign_at"],
                 enabled=config["enabled"],
             )
+            if config.get("execution_mode") == "range" and config.get("enabled", True):
+                schedule_range_catchup(config["account_name"], task_name, config)
         except Exception as e:
             logger.warning("更新调度任务失败: %s", e)
             self._append_scheduler_log(
@@ -1268,7 +1272,7 @@ class SignTaskService:
         self._tasks_cache = None
 
         try:
-            from backend.scheduler import add_or_update_sign_task_job
+            from backend.scheduler import add_or_update_sign_task_job, schedule_range_catchup
 
             cron_expr = (
                 config.get("range_start")
@@ -1278,6 +1282,8 @@ class SignTaskService:
             add_or_update_sign_task_job(
                 acc_name, task_name, cron_expr, enabled=bool(enabled)
             )
+            if enabled and config.get("execution_mode") == "range":
+                schedule_range_catchup(acc_name, task_name, config)
         except Exception as e:
             logger.warning("切换调度任务状态失败: %s", e)
 
@@ -1860,7 +1866,6 @@ class SignTaskService:
             self._active_logs[task_key].append(error_msg)
             # 打印堆栈以便调试
             traceback.print_exc()
-            logger = logging.getLogger("backend")
             logger.error(error_msg)
         finally:
             self._account_last_run_end[account_name] = time.time()
