@@ -401,25 +401,71 @@ function CreateSignTaskContent() {
 
                         {/* 调度模式 */}
                         <div className="p-4 glass-panel !bg-black/5 space-y-4 border-white/5">
-                            <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center justify-between">
                                 <label className="text-xs font-bold text-main/40 uppercase tracking-wider">
                                     {t("scheduling_mode")}
                                 </label>
-                                <div className="text-xs font-bold text-[#8a3ffc] bg-[#8a3ffc]/10 px-2 py-1 rounded">
-                                    {t("random_range_default")}
+                                {/* 模式切换 */}
+                                <div className="flex rounded-lg overflow-hidden border border-white/10">
+                                    <button
+                                        type="button"
+                                        onClick={() => setExecutionMode("range")}
+                                        className={`px-3 py-1.5 text-[10px] font-bold transition-all ${
+                                            executionMode === "range"
+                                                ? "bg-[#8a3ffc] text-white"
+                                                : "bg-white/5 text-main/40 hover:text-main/70"
+                                        }`}
+                                    >
+                                        {t("mode_range")}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setExecutionMode("fixed")}
+                                        className={`px-3 py-1.5 text-[10px] font-bold transition-all ${
+                                            executionMode === "fixed"
+                                                ? "bg-[#8a3ffc] text-white"
+                                                : "bg-white/5 text-main/40 hover:text-main/70"
+                                        }`}
+                                    >
+                                        {t("mode_fixed")}
+                                    </button>
                                 </div>
                             </div>
-                            <p className="text-xs text-[#9496a1] mb-4">{t("random_range_desc")}</p>
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 animate-fade-in">
-                                <div className="space-y-2">
-                                    <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("start_time")}</label>
-                                    <input type="time" className="!mb-0" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} />
-                                </div>
-                                <div className="space-y-2">
-                                    <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("end_time")}</label>
-                                    <input type="time" className="!mb-0" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
-                                </div>
-                            </div>
+
+                            {executionMode === "range" ? (
+                                <>
+                                    <p className="text-xs text-[#9496a1]">{t("random_range_desc")}</p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                        <div className="space-y-2">
+                                            <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("start_time")}</label>
+                                            <input type="time" className="!mb-0" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} />
+                                        </div>
+                                        <div className="space-y-2">
+                                            <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("end_time")}</label>
+                                            <input type="time" className="!mb-0" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
+                                        </div>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <p className="text-xs text-[#9496a1]">{t("fixed_cron_desc")}</p>
+                                    <div className="space-y-2">
+                                        <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("cron_expression")}</label>
+                                        <input
+                                            className="!mb-0 font-mono"
+                                            value={signAt}
+                                            onChange={(e) => setSignAt(e.target.value)}
+                                            placeholder={t("cron_placeholder")}
+                                            spellCheck={false}
+                                        />
+                                        <p className="text-[10px] text-main/30 font-mono">
+                                            分 时 日 月 周 &nbsp;·&nbsp; 示例：
+                                            <button type="button" onClick={() => setSignAt("0 9 * * *")} className="text-[#8a3ffc] hover:underline mx-1">0 9 * * *</button>
+                                            <button type="button" onClick={() => setSignAt("30 8 * * 1-5")} className="text-[#8a3ffc] hover:underline mx-1">30 8 * * 1-5</button>
+                                        </p>
+                                    </div>
+                                </>
+                            )}
                         </div>
                     </section>
 
