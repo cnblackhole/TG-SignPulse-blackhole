@@ -1831,19 +1831,20 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     async def _reply_by_calculation_problem(
         self, action: ReplyByCalculationProblemAction, message
     ):
-        if message.text:
+        text = (message.text or message.caption or "").strip()
+        if text:
             # Guard: skip bot timeout/error messages
             import re as _re
             for kw in self._BOT_ERROR_KEYWORDS:
-                if _re.search(kw, message.text, _re.IGNORECASE):
+                if _re.search(kw, text, _re.IGNORECASE):
                     self.log(
                         f"消息内容疑似 Bot 超时/取消提示（匹配关键词: {kw!r}），跳过 AI 计算",
                         level="WARNING",
                     )
                     return False
             self.log("检测到文本回复，尝试调用大模型进行计算题回答")
-            self.log(f"问题: \n{message.text}")
-            answer = await self.get_ai_tools().calculate_problem(message.text)
+            self.log(f"问题: \n{text}")
+            answer = await self.get_ai_tools().calculate_problem(text)
             answer = (answer or "").strip()
             self.log(f"回答为: {answer}")
             if not answer:
@@ -1884,19 +1885,20 @@ class UserSigner(BaseUserWorker[SignConfigV3]):
     async def _click_button_by_calculation_problem(
         self, action: ClickButtonByCalculationProblemAction, message
     ):
-        if not message.text:
+        text = (message.text or message.caption or "").strip()
+        if not text:
             return False
         # Guard: if the bot sent a timeout/error notice instead of a real problem, skip AI call
         import re as _re
         for kw in self._BOT_ERROR_KEYWORDS:
-            if _re.search(kw, message.text, _re.IGNORECASE):
+            if _re.search(kw, text, _re.IGNORECASE):
                 self.log(
                     f"消息内容疑似 Bot 超时/取消提示（匹配关键词: {kw!r}），跳过 AI 计算",
                     level="WARNING",
                 )
                 return False
         self.log("检测到计算题，尝试计算并点击按钮")
-        answer = await self.get_ai_tools().calculate_problem(message.text)
+        answer = await self.get_ai_tools().calculate_problem(text)
         answer = (answer or "").strip()
         if not answer:
             self.log("AI 未返回可用于点击的答案", level="WARNING")
