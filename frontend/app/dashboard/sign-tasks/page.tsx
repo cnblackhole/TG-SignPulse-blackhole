@@ -35,8 +35,83 @@ import {
     CheckCircle,
     XCircle,
     CaretRight,
-    CaretDown
+    CaretDown,
+    CalendarBlank,
 } from "@phosphor-icons/react";
+
+// ── 下次执行时间计算 ─────────────────────────────────────────────────────────
+
+function parseHHMM(hhmm: string): { h: number; m: number } | null {
+    const parts = hhmm.split(":");
+    if (parts.length < 2) return null;
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return null;
+    return { h, m };
+}
+
+function isSameDay(a: Date, b: Date) {
+    return a.getFullYear() === b.getFullYear() &&
+        a.getMonth() === b.getMonth() &&
+        a.getDate() === b.getDate();
+}
+
+function getNextRunInfo(task: SignTask): {
+    label: "today" | "tomorrow" | "in_window" | "paused" | "unknown";
+    timeRange?: string;   // "HH:MM – HH:MM" 或精确时刻
+} {
+    if (!task.enabled) return { label: "paused" };
+
+    const now = new Date();
+
+    if (task.execution_mode === "range" && task.range_start && task.range_end) {
+        const start = parseHHMM(task.range_start);
+        const end   = parseHHMM(task.range_end);
+        if (!start || !end) return { label: "unknown" };
+
+        const rangeStr = `${task.range_start} – ${task.range_end}`;
+
+        // 今天窗口的绝对时间点
+        const todayStart = new Date(now); todayStart.setHours(start.h, start.m, 0, 0);
+        const todayEnd   = new Date(now); todayEnd.setHours(end.h,   end.m,   59, 999);
+
+        // 今天是否已成功执行
+        const lastRun = task.last_run;
+        const ranSuccessToday =
+            !!lastRun &&
+            lastRun.success &&
+            isSameDay(new Date(lastRun.time), now);
+
+        if (ranSuccessToday) {
+            return { label: "tomorrow", timeRange: rangeStr };
+        }
+        if (now < todayStart) {
+            return { label: "today", timeRange: rangeStr };
+        }
+        if (now <= todayEnd) {
+            return { label: "in_window", timeRange: rangeStr };
+        }
+        // 窗口已过，今天未成功 → 明天
+        return { label: "tomorrow", timeRange: rangeStr };
+    }
+
+    // fixed cron — 解析 "分 时 * * *" 最常见格式
+    if (task.sign_at) {
+        const m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$/.exec(task.sign_at.trim());
+        if (m) {
+            const minute = parseInt(m[1], 10);
+            const hour   = parseInt(m[2], 10);
+            const todayAt = new Date(now); todayAt.setHours(hour, minute, 0, 0);
+            const target = todayAt > now ? todayAt : new Date(todayAt.getTime() + 86400_000);
+            const hh = String(target.getHours()).padStart(2, "0");
+            const mm = String(target.getMinutes()).padStart(2, "0");
+            const label = isSameDay(target, now) ? "today" : "tomorrow";
+            return { label, timeRange: `${hh}:${mm}` };
+        }
+    }
+
+    return { label: "unknown" };
+}
 import { ToastContainer, useToast } from "../../../components/ui/toast";
 import { ThemeLanguageToggle } from "../../../components/ThemeLanguageToggle";
 import { useLanguage } from "../../../context/LanguageContext";
@@ -348,6 +423,28 @@ export default function SignTasksPage() {
                                                 <span className={`inline-flex text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest border ${task.enabled ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-white/5 text-main/30 border-white/10'}`}>
                                                     {task.enabled ? t("status_active") : t("status_paused")}
                                                 </span>
+                                                {(() => {
+                                                    const info = getNextRunInfo(task);
+                                                    const labelMap: Record<string, string> = {
+                                                        today: t("next_run_today"),
+                                                        tomorrow: t("next_run_tomorrow"),
+                                                        in_window: t("next_run_in_window"),
+                                                        paused: t("next_run_paused"),
+                                                        unknown: t("next_run_unknown"),
+                                                    };
+                                                    const colorMap: Record<string, string> = {
+                                                        today: "text-sky-400",
+                                                        tomorrow: "text-[#b57dff]",
+                                                        in_window: "text-emerald-400",
+                                                        paused: "text-main/30",
+                                                        unknown: "text-main/30",
+                                                    };
+                                                    return (
+                                                        <div className={`text-[10px] font-mono font-bold ${colorMap[info.label]}`}>
+                                                            {t("task_next_run")}: {labelMap[info.label]}{info.timeRange ? ` · ${info.timeRange}` : ""}
+                                                        </div>
+                                                    );
+                                                })()}
                                                 {task.last_run ? (
                                                     <div className="text-[10px] font-mono text-main/40 flex items-center gap-2">
                                                         <span className={task.last_run.success ? 'text-emerald-400' : 'text-rose-400'}>
@@ -454,6 +551,34 @@ export default function SignTasksPage() {
                                             {t("task_hits").replace("{count}", task.chats.length.toString())}
                                         </span>
                                     </div>
+                                    {(() => {
+                                        const info = getNextRunInfo(task);
+                                        const labelMap: Record<string, string> = {
+                                            today: t("next_run_today"),
+                                            tomorrow: t("next_run_tomorrow"),
+                                            in_window: t("next_run_in_window"),
+                                            paused: t("next_run_paused"),
+                                            unknown: t("next_run_unknown"),
+                                        };
+                                        const colorMap: Record<string, string> = {
+                                            today: "text-sky-400",
+                                            tomorrow: "text-[#b57dff]",
+                                            in_window: "text-emerald-400",
+                                            paused: "text-main/30",
+                                            unknown: "text-main/30",
+                                        };
+                                        return (
+                                            <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
+                                                <div className="flex items-center gap-2 text-main/40">
+                                                    <CalendarBlank weight="bold" size={14} />
+                                                    <span className="text-[10px] font-bold uppercase tracking-wider">{t("task_next_run")}</span>
+                                                </div>
+                                                <span className={`text-xs font-mono font-bold ${colorMap[info.label]}`}>
+                                                    {labelMap[info.label]}{info.timeRange ? ` · ${info.timeRange}` : ""}
+                                                </span>
+                                            </div>
+                                        );
+                                    })()}
                                     <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
                                         <div className="flex items-center gap-2 text-main/40">
                                             <Clock weight="bold" size={14} />
