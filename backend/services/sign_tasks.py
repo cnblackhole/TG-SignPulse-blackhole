@@ -1124,6 +1124,7 @@ class SignTaskService:
                 task_name,
                 range_start if execution_mode == "range" else sign_at,
                 enabled=True,
+                task_config=config,
             )
             if execution_mode == "range":
                 schedule_range_catchup(account_name, task_name, config)
@@ -1218,6 +1219,7 @@ class SignTaskService:
                 if config.get("execution_mode") == "range"
                 else config["sign_at"],
                 enabled=config["enabled"],
+                task_config=config,
             )
             if config.get("execution_mode") == "range" and config.get("enabled", True):
                 schedule_range_catchup(config["account_name"], task_name, config)
@@ -1280,7 +1282,8 @@ class SignTaskService:
                 else config.get("sign_at", "")
             )
             add_or_update_sign_task_job(
-                acc_name, task_name, cron_expr, enabled=bool(enabled)
+                acc_name, task_name, cron_expr, enabled=bool(enabled),
+                task_config=config,
             )
             if enabled and config.get("execution_mode") == "range":
                 schedule_range_catchup(acc_name, task_name, config)

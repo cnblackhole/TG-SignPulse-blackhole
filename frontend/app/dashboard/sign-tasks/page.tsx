@@ -71,6 +71,22 @@ function getNextRunInfo(task: SignTask): {
 
     // ── 优先用后端 APScheduler 的精确触发时间 ──────────────────────────────
     if (task.next_run_time) {
+        // range 模式：若当前处于窗口内且今日未成功执行，优先显示"正在窗口内"
+        if (task.execution_mode === "range" && task.range_start && task.range_end) {
+            const start = parseHHMM(task.range_start);
+            const end   = parseHHMM(task.range_end);
+            if (start && end) {
+                const todayStart = new Date(now); todayStart.setHours(start.h, start.m, 0, 0);
+                const todayEnd   = new Date(now); todayEnd.setHours(end.h, end.m, 59, 999);
+                const ranSuccessToday =
+                    !!task.last_run && task.last_run.success &&
+                    isSameDay(new Date(task.last_run.time), now);
+                if (!ranSuccessToday && now >= todayStart && now <= todayEnd) {
+                    return { label: "in_window", timeStr: `${task.range_start} ~ ${task.range_end}`, isExact: false };
+                }
+            }
+        }
+
         const nrt = new Date(task.next_run_time);
         const label = isSameDay(nrt, now) ? "today" : "tomorrow";
         const triggerHHMM = fmtHHMM(nrt);

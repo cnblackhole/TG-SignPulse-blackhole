@@ -55,64 +55,11 @@ async def _job_run_task(task_id: int) -> None:
 
 
 async def _job_run_sign_task(account_name: str, task_name: str) -> None:
-    """运行签到任务的 Job 包装器"""
-    import asyncio
-    import random
-    from datetime import datetime, timedelta
-
+    """运行签到任务的 Job 包装器（直接执行，不含随机延迟）"""
     from backend.services.sign_tasks import get_sign_task_service
 
     try:
         logger.info("开始执行签到任务 %s (账号: %s)", task_name, account_name)
-
-        # 获取任务配置，检查是否为随机时间段模式
-        sign_task_service = get_sign_task_service()
-        task_config = sign_task_service.get_task(task_name, account_name)
-        if task_config and task_config.get("execution_mode") == "range":
-            range_start_str = task_config.get("range_start")
-            range_end_str = task_config.get("range_end")
-
-            if range_start_str and range_end_str:
-                try:
-                    # 解析时间
-                    fmt = "%H:%M"
-                    start_time = datetime.strptime(range_start_str, fmt).time()
-                    end_time = datetime.strptime(range_end_str, fmt).time()
-
-                    # 转换为当前日期的 datetime
-                    now = datetime.now()
-                    start_dt = now.replace(
-                        hour=start_time.hour,
-                        minute=start_time.minute,
-                        second=0,
-                        microsecond=0,
-                    )
-                    end_dt = now.replace(
-                        hour=end_time.hour,
-                        minute=end_time.minute,
-                        second=0,
-                        microsecond=0,
-                    )
-
-                    # 如果结束时间小于开始时间，假设是第二天（虽然CRON触发通常在开始时间，这里做个防御）
-                    if end_dt < start_dt:
-                        end_dt += timedelta(days=1)
-
-                    # 计算总秒数
-                    total_seconds = (end_dt - start_dt).total_seconds()
-
-                    if total_seconds > 0:
-                        delay_seconds = random.uniform(0, total_seconds)
-                        logger.info(
-                            "任务 %s 随机时间段模式 (%s - %s)，等待 %ds (%.1f 分钟) 后执行",
-                            task_name, range_start_str, range_end_str,
-                            int(delay_seconds), delay_seconds / 60,
-                        )
-                        await asyncio.sleep(delay_seconds)
-
-                except Exception as e:
-                    logger.error("计算随机时间段延迟失败: %s — 立即执行任务 %s", e, task_name)
-
         sign_task_service = get_sign_task_service()
         result = await sign_task_service.run_task_with_logs(account_name, task_name)
         if result.get("success"):
@@ -121,6 +68,62 @@ async def _job_run_sign_task(account_name: str, task_name: str) -> None:
             logger.error("任务 %s 执行失败: %s", task_name, result.get("error"))
     except Exception as e:
         logger.error("运行签到任务 %s 异常: %s", task_name, e, exc_info=True)
+
+
+def _schedule_range_random_run(account_name: str, task_name: str, st: dict) -> None:
+    """
+    range 模式 CRON 触发时调用：在剩余窗口内随机选一个时刻用 DateTrigger 执行。
+    相比 asyncio.sleep，DateTrigger 注册到 APScheduler 后进程重启仍可通过
+    sync_jobs / schedule_range_catchup 补回，不会因重启丢失当天执行。
+    """
+    global scheduler
+    if not scheduler:
+        return
+
+    import random
+    from datetime import datetime, timedelta
+
+    from apscheduler.triggers.date import DateTrigger
+
+    range_start_str = st.get("range_start", "")
+    range_end_str = st.get("range_end", "")
+    if not range_start_str or not range_end_str:
+        return
+
+    try:
+        fmt = "%H:%M"
+        now = datetime.now()
+        start_t = datetime.strptime(range_start_str, fmt).time()
+        end_t = datetime.strptime(range_end_str, fmt).time()
+
+        start_dt = now.replace(hour=start_t.hour, minute=start_t.minute, second=0, microsecond=0)
+        end_dt = now.replace(hour=end_t.hour, minute=end_t.minute, second=0, microsecond=0)
+        if end_dt <= start_dt:
+            end_dt += timedelta(days=1)
+
+        # 在当前时刻到窗口结束之间随机选取
+        remaining = (end_dt - now).total_seconds()
+        if remaining <= 0:
+            logger.warning("任务 %s 窗口已结束，跳过本次随机调度", task_name)
+            return
+
+        delay = random.uniform(0, remaining)
+        run_at = now + timedelta(seconds=delay)
+        job_id = f"sign-{account_name}-{task_name}-catchup"
+
+        scheduler.add_job(
+            _job_run_sign_task,
+            trigger=DateTrigger(run_date=run_at),
+            id=job_id,
+            args=[account_name, task_name],
+            replace_existing=True,
+        )
+        logger.info(
+            "任务 %s range 模式，将在 %ds (%.1f 分钟) 后执行 (约 %s)",
+            task_name, int(delay), delay / 60, run_at.strftime("%H:%M:%S"),
+        )
+    except Exception as e:
+        logger.warning("range 随机调度失败 %s: %s", task_name, e)
 
 
 async def _job_maintenance() -> None:
@@ -264,23 +267,34 @@ async def sync_jobs() -> None:
                 continue
 
             try:
-                trigger = create_cron_trigger(st["sign_at"])
-                if st.get("execution_mode") == "range" and st.get("range_start"):
-                    trigger = create_cron_trigger(st["range_start"])
+                is_range = st.get("execution_mode") == "range" and st.get("range_start")
+                trigger = create_cron_trigger(st["range_start"] if is_range else st["sign_at"])
+
+                # range 模式：CRON 触发时只负责安排随机 DateTrigger，不直接执行
+                cron_callback = _schedule_range_random_run if is_range else _job_run_sign_task
+                cron_args = [account_name, task_name, st] if is_range else [account_name, task_name]
 
                 if job_id in existing_ids:
                     scheduler.reschedule_job(job_id, trigger=trigger)
-                else:
+                    # 更新回调（reschedule 不更新 func/args，需要重新 add）
                     scheduler.add_job(
-                        _job_run_sign_task,
+                        cron_callback,
                         trigger=trigger,
                         id=job_id,
-                        args=[account_name, task_name],
+                        args=cron_args,
+                        replace_existing=True,
+                    )
+                else:
+                    scheduler.add_job(
+                        cron_callback,
+                        trigger=trigger,
+                        id=job_id,
+                        args=cron_args,
                         replace_existing=True,
                     )
 
                 # 若 range 模式且当前处于窗口内、今日未执行，补一次立即执行
-                if st.get("execution_mode") == "range":
+                if is_range:
                     schedule_range_catchup(account_name, task_name, st)
             except Exception as e:
                 logger.error("Error scheduling sign task %s: %s", task_name, e)
@@ -329,7 +343,11 @@ def shutdown_scheduler() -> None:
 
 
 def add_or_update_sign_task_job(
-    account_name: str, task_name: str, cron_expression: str, enabled: bool = True
+    account_name: str,
+    task_name: str,
+    cron_expression: str,
+    enabled: bool = True,
+    task_config: dict | None = None,
 ) -> None:
     """动态添加或更新签到任务 Job"""
     global scheduler
@@ -343,18 +361,25 @@ def add_or_update_sign_task_job(
         return
 
     try:
-        cron = cron_expression
-        trigger = create_cron_trigger(cron)
+        trigger = create_cron_trigger(cron_expression)
 
-        # 总是使用 replace_existing=True 来覆盖旧的
+        # range 模式：CRON 触发时安排随机 DateTrigger，不直接执行
+        is_range = task_config and task_config.get("execution_mode") == "range"
+        if is_range:
+            callback = _schedule_range_random_run
+            args = [account_name, task_name, task_config]
+        else:
+            callback = _job_run_sign_task
+            args = [account_name, task_name]
+
         scheduler.add_job(
-            _job_run_sign_task,
+            callback,
             trigger=trigger,
             id=job_id,
-            args=[account_name, task_name],
+            args=args,
             replace_existing=True,
         )
-        logger.info("已添加/更新任务 %s -> %s", job_id, cron)
+        logger.info("已添加/更新任务 %s -> %s", job_id, cron_expression)
     except Exception as e:
         logger.error("添加任务 %s 失败: %s", job_id, e)
 
