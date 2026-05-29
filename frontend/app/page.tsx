@@ -20,9 +20,13 @@ export default function Home() {
     }
   }, []);
 
-  // 正在检查或有 token 时不显示登录表单
+  // 正在检查 token 或已有 token（即将跳转）时，显示占位 loading
   if (checking || hasToken) {
-    return null;
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
   }
 
   return (
