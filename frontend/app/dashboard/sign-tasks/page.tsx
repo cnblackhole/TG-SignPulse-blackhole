@@ -612,14 +612,6 @@ function CreateSignTaskContent() {
                                         onChange={(e) => setEditingChat({ ...editingChat, message_thread_id: e.target.value ? parseInt(e.target.value) : undefined })}
                                     />
                                 </div>
-                                <div className="mt-4">
-                                    <label className="text-[10px] text-main/40 uppercase tracking-wider">发言后自动删除（秒，留空不删除）</label>
-                                    <input inputMode="numeric" className="!mb-0"
-                                        placeholder="例：30（30秒后删除，留空不删除）"
-                                        value={editingChat.delete_after ?? ""}
-                                        onChange={(e) => setEditingChat({ ...editingChat, delete_after: e.target.value ? parseInt(e.target.value) : undefined })}
-                                    />
-                                </div>
                             </div>
 
                             <div className="space-y-4">
