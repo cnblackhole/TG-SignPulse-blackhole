@@ -1,858 +1,886 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Suspense } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { getToken } from "../../../../lib/auth";
+import { getToken } from "../../../lib/auth";
 import {
-    createSignTask,
-    updateSignTask,
-    getSignTask,
+    listSignTasks,
+    deleteSignTask,
+    runSignTask,
+    getSignTaskHistory,
+    setSignTaskEnabled,
     listAccounts,
-    getAccountChats,
-    searchAccountChats,
-    testRunChat,
+    SignTask,
+    SignTaskHistoryItem,
     AccountInfo,
-    ChatInfo,
-    SignTaskChat,
-} from "../../../../lib/api";
+} from "../../../lib/api";
 import {
-    CaretLeft,
     Plus,
-    X,
-    ChatCircleText,
+    CaretLeft,
+    Play,
+    Pause,
+    PencilSimple,
     Trash,
     Spinner,
     Lightning,
-    Check,
-    PencilSimple,
-    Play,
+    Clock,
+    ChatCircleText,
+    ListDashes,
+    FileText,
+    ArrowClockwise,
+    X,
+    Copy,
+    ClipboardText,
+    CheckCircle,
+    XCircle,
+    CaretRight,
+    CaretDown,
+    CalendarBlank,
 } from "@phosphor-icons/react";
-import { ThemeLanguageToggle } from "../../../../components/ThemeLanguageToggle";
-import { useLanguage } from "../../../../context/LanguageContext";
-import { ToastContainer, useToast } from "../../../../components/ui/toast";
 
-const DICE_OPTIONS = ["🎲", "🎯", "🏀", "⚽", "🎳", "🎰"];
+// ── 下次执行时间计算 ─────────────────────────────────────────────────────────
 
-const ACTION_TYPES = [
-    { value: 1, labelKey: "action_send_text" },
-    { value: 2, labelKey: "action_send_dice" },
-    { value: 3, labelKey: "action_click_button" },
-    { value: 4, labelKey: "action_ai_vision_click" },
-    { value: 5, labelKey: "action_ai_logic_send" },
-    { value: 6, labelKey: "action_ai_vision_send" },
-    { value: 7, labelKey: "action_ai_logic_click" },
-    { value: 8, labelKey: "keyword_monitor" },
-];
+function parseHHMM(hhmm: string): { h: number; m: number } | null {
+    const parts = hhmm.split(":");
+    if (parts.length < 2) return null;
+    const h = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10);
+    if (isNaN(h) || isNaN(m)) return null;
+    return { h, m };
+}
 
-const defaultActionData = (actionType: number): any => {
-    switch (actionType) {
-        case 2: return { action: 2, dice: "🎲" };
-        case 3: return { action: 3, text: "" };
-        case 4: return { action: 4, question: "" };
-        case 5: return { action: 5 };
-        case 6: return { action: 6 };
-        case 7: return { action: 7 };
-        case 8: return { action: 8, keywords: [], match_mode: "contains", ignore_case: true, push_channel: "telegram" };
-        default: return { action: 1, text: "" };
+function isSameDay(a: Date, b: Date) {
+    return a.getFullYear() === b.getFullYear() &&
+        a.getMonth() === b.getMonth() &&
+        a.getDate() === b.getDate();
+}
+
+function fmtHHMM(d: Date) {
+    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+function getNextRunInfo(task: SignTask): {
+    label: "today" | "tomorrow" | "in_window" | "paused" | "unknown";
+    timeStr: string;   // 显示内容
+    isExact: boolean;  // true=精确时刻  false=区间
+} {
+    if (!task.enabled) return { label: "paused", timeStr: "", isExact: false };
+
+    const now = new Date();
+
+    // ── 优先用后端 APScheduler 的精确触发时间 ──────────────────────────────
+    if (task.next_run_time) {
+        // range 模式：若当前处于窗口内且今日未成功执行，优先显示"正在窗口内"
+        if (task.execution_mode === "range" && task.range_start && task.range_end) {
+            const start = parseHHMM(task.range_start);
+            const end   = parseHHMM(task.range_end);
+            if (start && end) {
+                const todayStart = new Date(now); todayStart.setHours(start.h, start.m, 0, 0);
+                const todayEnd   = new Date(now); todayEnd.setHours(end.h, end.m, 59, 999);
+                const ranSuccessToday =
+                    !!task.last_run && task.last_run.success &&
+                    isSameDay(new Date(task.last_run.time), now);
+                if (!ranSuccessToday && now >= todayStart && now <= todayEnd) {
+                    return { label: "in_window", timeStr: `${task.range_start} ~ ${task.range_end}`, isExact: false };
+                }
+            }
+        }
+
+        const nrt = new Date(task.next_run_time);
+        const label = isSameDay(nrt, now) ? "today" : "tomorrow";
+        const triggerHHMM = fmtHHMM(nrt);
+
+        if (task.execution_mode === "range" && task.range_end) {
+            // 触发时间 = range_start，实际执行在窗口内随机
+            return { label, timeStr: `${triggerHHMM} ~ ${task.range_end}`, isExact: false };
+        }
+        // 固定 cron：触发即执行，时间精确
+        return { label, timeStr: triggerHHMM, isExact: true };
     }
-};
 
-function CreateSignTaskContent() {
+    // ── 后端未返回时间（如调度器未启动）时纯前端兜底 ───────────────────────
+    if (task.execution_mode === "range" && task.range_start && task.range_end) {
+        const start = parseHHMM(task.range_start);
+        const end   = parseHHMM(task.range_end);
+        if (!start || !end) return { label: "unknown", timeStr: "", isExact: false };
+
+        const rangeStr = `${task.range_start} ~ ${task.range_end}`;
+        const todayStart = new Date(now); todayStart.setHours(start.h, start.m, 0, 0);
+        const todayEnd   = new Date(now); todayEnd.setHours(end.h, end.m, 59, 999);
+
+        const ranSuccessToday =
+            !!task.last_run && task.last_run.success &&
+            isSameDay(new Date(task.last_run.time), now);
+
+        if (ranSuccessToday)  return { label: "tomorrow", timeStr: rangeStr, isExact: false };
+        if (now < todayStart) return { label: "today",    timeStr: rangeStr, isExact: false };
+        if (now <= todayEnd)  return { label: "in_window", timeStr: rangeStr, isExact: false };
+        return { label: "tomorrow", timeStr: rangeStr, isExact: false };
+    }
+
+    if (task.sign_at) {
+        const m = /^(\d+)\s+(\d+)\s+\*\s+\*\s+\*$/.exec(task.sign_at.trim());
+        if (m) {
+            const todayAt = new Date(now);
+            todayAt.setHours(parseInt(m[2], 10), parseInt(m[1], 10), 0, 0);
+            const target = todayAt > now ? todayAt : new Date(todayAt.getTime() + 86400_000);
+            return {
+                label: isSameDay(target, now) ? "today" : "tomorrow",
+                timeStr: fmtHHMM(target),
+                isExact: true,
+            };
+        }
+    }
+
+    return { label: "unknown", timeStr: "", isExact: false };
+}
+import { ToastContainer, useToast } from "../../../components/ui/toast";
+import { ThemeLanguageToggle } from "../../../components/ThemeLanguageToggle";
+import { useLanguage } from "../../../context/LanguageContext";
+
+export default function SignTasksPage() {
     const router = useRouter();
-    const searchParams = useSearchParams();
-    const editName = searchParams.get("edit") || "";
-    const editAccount = searchParams.get("account") || "";
-    const isEditing = !!editName;
-
-    const { t } = useLanguage();
+    const { t, language } = useLanguage();
     const { toasts, addToast, removeToast } = useToast();
     const [token, setLocalToken] = useState<string | null>(null);
-    const [loading, setLoading] = useState(false);
-    const [loadingTask, setLoadingTask] = useState(false);
-
-    // 表单数据
-    const [taskName, setTaskName] = useState("");
-    const [executionMode, setExecutionMode] = useState<"fixed" | "range">("range");
-    const [signAt, setSignAt] = useState("0 6 * * *");
-    const [rangeStart, setRangeStart] = useState("09:00");
-    const [rangeEnd, setRangeEnd] = useState("18:00");
-    const [randomSeconds, setRandomSeconds] = useState(0);
-    const [signInterval, setSignInterval] = useState(1);
-    const [chats, setChats] = useState<SignTaskChat[]>([]);
-
-    // 账号和 Chat 数据
+    const [tasks, setTasks] = useState<SignTask[]>([]);
     const [accounts, setAccounts] = useState<AccountInfo[]>([]);
-    const [selectedAccount, setSelectedAccount] = useState("");
-    const [availableChats, setAvailableChats] = useState<ChatInfo[]>([]);
-    const [chatSearch, setChatSearch] = useState("");
-    const [chatSearchResults, setChatSearchResults] = useState<ChatInfo[]>([]);
-    const [chatSearchLoading, setChatSearchLoading] = useState(false);
+    const [loading, setLoading] = useState(false);
+    const [checking, setChecking] = useState(true);
+    const [runningTask, setRunningTask] = useState<string | null>(null);
+    const [runLogs, setRunLogs] = useState<string[]>([]);
+    const [isDone, setIsDone] = useState(false);
+    const [historyTask, setHistoryTask] = useState<SignTask | null>(null);
+    const [historyLogs, setHistoryLogs] = useState<SignTaskHistoryItem[]>([]);
+    const [historyLoading, setHistoryLoading] = useState(false);
+    const [logsTask, setLogsTask] = useState<SignTask | null>(null);
+    const [logsItem, setLogsItem] = useState<SignTaskHistoryItem | null>(null);
+    const [logsLoading, setLogsLoading] = useState(false);
+    const [togglingTask, setTogglingTask] = useState<string | null>(null);
 
-    // 测试执行
-    const [testingChatIdx, setTestingChatIdx] = useState<number | null>(null);
-
-    // 用 ref 稳定回调，避免 addToast/t 变化时触发 useEffect 无限重跑
     const addToastRef = useRef(addToast);
     const tRef = useRef(t);
-    const routerRef = useRef(router);
+
     useEffect(() => {
         addToastRef.current = addToast;
         tRef.current = t;
-        routerRef.current = router;
-    }, [addToast, t, router]);
+    }, [addToast, t]);
 
     const formatErrorMessage = useCallback((key: string, err?: any) => {
-        const base = tRef.current(key);
+        const base = tRef.current ? tRef.current(key) : key;
         const code = err?.code;
         return code ? `${base} (${code})` : base;
     }, []);
 
-    const handleAccountSessionInvalid = useCallback((err: any) => {
-        if (err?.code !== "ACCOUNT_SESSION_INVALID") return false;
-        addToastRef.current(tRef.current("account_session_invalid"), "error");
-        setTimeout(() => routerRef.current.replace("/dashboard"), 800);
-        return true;
-    }, []);
-
-    // 当前编辑的 Chat（null=新建，数字=编辑已有索引）
-    const [editingChatIndex, setEditingChatIndex] = useState<number | null>(null);
-    const [editingChat, setEditingChat] = useState<{
-        chat_id: number;
-        name: string;
-        actions: any[];
-        delete_after?: number;
-        action_interval: number;
-        message_thread_id?: number;
-    } | null>(null);
-
-    const loadChats = useCallback(async (tokenStr: string, accountName: string) => {
+    const loadData = useCallback(async (tokenStr: string) => {
         try {
-            const chatsData = await getAccountChats(tokenStr, accountName);
-            setAvailableChats(chatsData);
+            setLoading(true);
+            const [tasksData, accountsData] = await Promise.all([
+                listSignTasks(tokenStr),
+                listAccounts(tokenStr),
+            ]);
+            setTasks(tasksData);
+            setAccounts(accountsData.accounts);
         } catch (err: any) {
-            if (handleAccountSessionInvalid(err)) return;
-            console.error("加载 Chat 失败:", err);
-        }
-    }, [handleAccountSessionInvalid]);
-
-    const loadAccounts = useCallback(async (tokenStr: string, defaultAccount?: string) => {
-        try {
-            const data = await listAccounts(tokenStr);
-            setAccounts(data.accounts);
-            const account = defaultAccount || (data.accounts.length > 0 ? data.accounts[0].name : "");
-            if (account) {
-                setSelectedAccount(account);
-                loadChats(tokenStr, account);
+            const toast = addToastRef.current;
+            if (toast) {
+                toast(formatErrorMessage("load_failed", err), "error");
             }
-        } catch (err: any) {
-            addToastRef.current(formatErrorMessage("load_failed", err), "error");
-        }
-    }, [loadChats, formatErrorMessage]);
-
-    // 编辑模式：加载现有任务数据
-    const loadExistingTask = useCallback(async (tokenStr: string, name: string, account: string) => {
-        if (!name || !account) return;
-        setLoadingTask(true);
-        try {
-            const task = await getSignTask(tokenStr, name, account);
-            setTaskName(task.name);
-            setSelectedAccount(task.account_name);
-            setExecutionMode(task.execution_mode || "range");
-            setSignAt(task.sign_at || "0 6 * * *");
-            setRangeStart(task.range_start || "09:00");
-            setRangeEnd(task.range_end || "18:00");
-            setRandomSeconds(task.random_seconds || 0);
-            setSignInterval(task.sign_interval || 1);
-            setChats(task.chats || []);
-            await loadChats(tokenStr, task.account_name);
-        } catch (err: any) {
-            addToastRef.current(formatErrorMessage("load_failed", err), "error");
         } finally {
-            setLoadingTask(false);
+            setLoading(false);
         }
-    }, [loadChats, formatErrorMessage]);
+    }, [formatErrorMessage]);
 
-    // 仅在挂载时执行一次初始化，避免 addToast/t 引用变化导致无限重跑
     useEffect(() => {
         const tokenStr = getToken();
-        if (!tokenStr) { routerRef.current.replace("/"); return; }
+        if (!tokenStr) {
+            window.location.replace("/");
+            return;
+        }
         setLocalToken(tokenStr);
-        const editing = !!searchParams.get("edit");
-        const eName = searchParams.get("edit") || "";
-        const eAcc = searchParams.get("account") || "";
-        if (editing) {
-            loadAccounts(tokenStr, eAcc);
-            loadExistingTask(tokenStr, eName, eAcc);
-        } else {
-            loadAccounts(tokenStr);
-        }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+        setChecking(false);
+        loadData(tokenStr);
+    }, [loadData]);
 
-    const handleAccountChange = (accountName: string) => {
-        setSelectedAccount(accountName);
-        if (token) loadChats(token, accountName);
-    };
+    const handleDelete = async (task: SignTask) => {
+        if (!token) return;
 
-    useEffect(() => {
-        if (!token || !selectedAccount) return;
-        const query = chatSearch.trim();
-        if (!query) {
-            setChatSearchResults([]);
-            setChatSearchLoading(false);
+        if (!confirm(t("confirm_delete"))) {
             return;
         }
-        let cancelled = false;
-        setChatSearchLoading(true);
-        const timer = setTimeout(async () => {
-            try {
-                const res = await searchAccountChats(token, selectedAccount, query, 50, 0);
-                if (!cancelled) setChatSearchResults(res.items || []);
-            } catch (err: any) {
-                if (!cancelled) {
-                    if (handleAccountSessionInvalid(err)) return;
-                    addToastRef.current(formatErrorMessage("search_failed", err), "error");
-                    setChatSearchResults([]);
-                }
-            } finally {
-                if (!cancelled) setChatSearchLoading(false);
-            }
-        }, 300);
-        return () => { cancelled = true; clearTimeout(timer); };
-    }, [chatSearch, token, selectedAccount, formatErrorMessage, handleAccountSessionInvalid]);
-
-    useEffect(() => {
-        if (!editingChat) {
-            setChatSearch("");
-            setChatSearchResults([]);
-            setChatSearchLoading(false);
-        }
-    }, [editingChat]);
-
-    const handleAddChat = () => {
-        setEditingChatIndex(null);
-        setEditingChat({ chat_id: 0, name: "", message_thread_id: undefined, actions: [], action_interval: 1 });
-    };
-
-    const handleEditChat = (idx: number) => {
-        setEditingChatIndex(idx);
-        setEditingChat({ ...chats[idx] });
-    };
-
-    const handleSaveChat = () => {
-        if (!editingChat) return;
-        if (editingChat.chat_id === 0) { addToastRef.current(tRef.current("select_chat_error"), "error"); return; }
-        if (editingChat.actions.length === 0) { addToastRef.current(tRef.current("add_action_error"), "error"); return; }
-        const firstActionType = editingChat.actions[0]?.action;
-        if (firstActionType !== 1 && firstActionType !== 2) {
-            addToastRef.current(tRef.current("first_action_must_be_send"), "error");
-            return;
-        }
-        if (editingChatIndex !== null) {
-            const updated = [...chats];
-            updated[editingChatIndex] = editingChat;
-            setChats(updated);
-        } else {
-            setChats([...chats, editingChat]);
-        }
-        setEditingChat(null);
-        setEditingChatIndex(null);
-    };
-
-    const handleTestChat = async (idx: number) => {
-        if (!token) return;
-        setTestingChatIdx(idx);
-        const chat = chats[idx];
-        try {
-            const res = await testRunChat(token, selectedAccount, {
-                chat_id: chat.chat_id,
-                name: chat.name,
-                actions: chat.actions,
-                action_interval: chat.action_interval,
-                message_thread_id: chat.message_thread_id,
-                delete_after: chat.delete_after,
-            });
-            if (res.success) {
-                addToastRef.current(tRef.current("test_chat_success") || "测试执行完成", "success");
-            } else {
-                addToastRef.current(`${tRef.current("test_chat_failed") || "测试执行失败"}: ${res.message}`, "error");
-            }
-        } catch (err: any) {
-            addToastRef.current(formatErrorMessage("test_chat_failed", err) || "测试执行失败", "error");
-        } finally {
-            setTestingChatIdx(null);
-        }
-    };
-
-    const handleSubmit = async () => {
-        if (!token) return;
-        if (!isEditing && !taskName) { addToastRef.current(tRef.current("task_name_required"), "error"); return; }
-        if (executionMode === "fixed" && !signAt) { addToastRef.current(tRef.current("cron_required"), "error"); return; }
-        if (executionMode === "range" && (!rangeStart || !rangeEnd)) { addToastRef.current(tRef.current("range_required"), "error"); return; }
-        if (chats.length === 0) { addToastRef.current(tRef.current("chat_required"), "error"); return; }
 
         try {
             setLoading(true);
-            if (isEditing) {
-                await updateSignTask(token, editName, {
-                    sign_at: executionMode === "fixed" ? signAt : "0 0 * * *",
-                    chats,
-                    random_seconds: randomSeconds,
-                    sign_interval: signInterval,
-                    execution_mode: executionMode,
-                    range_start: rangeStart,
-                    range_end: rangeEnd,
-                }, editAccount);
-                addToastRef.current(tRef.current("save_success") || "保存成功", "success");
-            } else {
-                await createSignTask(token, {
-                    name: taskName,
-                    account_name: selectedAccount,
-                    sign_at: executionMode === "fixed" ? signAt : "0 0 * * *",
-                    chats,
-                    random_seconds: randomSeconds,
-                    sign_interval: signInterval,
-                    execution_mode: executionMode,
-                    range_start: rangeStart,
-                    range_end: rangeEnd,
-                });
-                addToastRef.current(tRef.current("create_success"), "success");
-            }
-            setTimeout(() => routerRef.current.push("/dashboard/sign-tasks"), 1000);
+            await deleteSignTask(token, task.name, task.account_name);
+            addToast(t("task_deleted").replace("{name}", task.name), "success");
+            await loadData(token);
         } catch (err: any) {
-            addToastRef.current(formatErrorMessage(isEditing ? "save_failed" : "create_failed", err), "error");
+            addToast(formatErrorMessage("delete_failed", err), "error");
         } finally {
             setLoading(false);
         }
     };
 
-    if (!token) return null;
+    const handleRun = async (task: SignTask) => {
+        if (!token) return;
+        const taskName = task.name;
+        const accountName = task.account_name;
+
+        setRunningTask(taskName);
+        setRunLogs([]);
+        setIsDone(false);
+
+        try {
+            // 建立 WebSocket 连接
+            // 开发环境：前端在 :3000，后端在 :8080；生产/Docker 同端口
+            const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+            const host = window.location.port === "3000"
+                ? window.location.hostname + ":8080"
+                : window.location.host;
+            const wsParams = new URLSearchParams({ token, account_name: accountName });
+            const wsUrl = `${protocol}//${host}/api/sign-tasks/ws/${taskName}?${wsParams.toString()}`;
+            const ws = new WebSocket(wsUrl);
+
+            ws.onmessage = (event) => {
+                const data = JSON.parse(event.data);
+                if (data.type === "logs") {
+                    setRunLogs(prev => [...prev, ...data.data]);
+                } else if (data.type === "done") {
+                    setIsDone(true);
+                }
+            };
+
+            ws.onerror = (err) => {
+                console.error("WebSocket error:", err);
+            };
+
+            const result = await runSignTask(token, taskName, accountName);
+
+            if (!result.success) {
+                if (result.error && result.error.includes("运行中")) {
+                    addToast(language === "zh" ? "该任务正在运行中，正在为您展示实时进度..." : "Task is currently running. Showing real-time logs.", "info");
+                } else {
+                    addToast(result.error || t("task_run_failed"), "error");
+                    setIsDone(true);
+                }
+            } else {
+                addToast(t("task_run_success").replace("{name}", taskName), "success");
+            }
+        } catch (err: any) {
+            addToast(formatErrorMessage("task_run_failed", err), "error");
+            setRunningTask(null);
+        }
+    };
+
+    const handleShowTaskHistory = async (task: SignTask) => {
+        if (!token) return;
+        setHistoryTask(task);
+        setHistoryLogs([]);
+        setHistoryLoading(true);
+        try {
+            const logs = await getSignTaskHistory(token, task.name, task.account_name, 30);
+            setHistoryLogs(logs);
+        } catch (err: any) {
+            addToast(formatErrorMessage("logs_fetch_failed", err), "error");
+        } finally {
+            setHistoryLoading(false);
+        }
+    };
+
+    const handleShowTaskLogs = async (task: SignTask) => {
+        if (!token) return;
+        setLogsTask(task);
+        setLogsItem(null);
+        setLogsLoading(true);
+        try {
+            const logs = await getSignTaskHistory(token, task.name, task.account_name, 1);
+            setLogsItem(logs[0] || null);
+        } catch (err: any) {
+            addToast(formatErrorMessage("logs_fetch_failed", err), "error");
+        } finally {
+            setLogsLoading(false);
+        }
+    };
+
+    const handleToggleEnabled = async (task: SignTask) => {
+        if (!token) return;
+        const next = !task.enabled;
+        try {
+            setTogglingTask(task.name);
+            await setSignTaskEnabled(token, task.name, task.account_name, next);
+            setTasks(prev => prev.map(p => p.name === task.name && p.account_name === task.account_name ? { ...p, enabled: next } : p));
+            addToast(
+                next
+                    ? (t("task_started") || "已开启定时签到").replace("{name}", task.name)
+                    : (t("task_stopped") || "已停止定时签到").replace("{name}", task.name),
+                "success"
+            );
+        } catch (err: any) {
+            addToast(formatErrorMessage("task_toggle_failed", err), "error");
+        } finally {
+            setTogglingTask(null);
+        }
+    };
+
+    const handleExportTasks = async () => {
+        if (!token) return;
+        try {
+            setLoading(true);
+            const { exportAllConfigs } = require("../../../lib/api");
+            const configStr = await exportAllConfigs(token);
+            await navigator.clipboard.writeText(configStr);
+            addToast(t("export_success") || "Export successful, copied to clipboard", "success");
+        } catch (err: any) {
+            addToast(formatErrorMessage("export_failed", err), "error");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleImportTasks = async () => {
+        if (!token) return;
+        try {
+            const text = await navigator.clipboard.readText();
+            if (!text) {
+                addToast(t("import_empty") || "Clipboard is empty", "error");
+                return;
+            }
+            setLoading(true);
+            const { importAllConfigs } = require("../../../lib/api");
+            await importAllConfigs(token, text, false);
+            addToast(t("import_success") || "Import successful", "success");
+            await loadData(token);
+        } catch (err: any) {
+            addToast(formatErrorMessage("import_failed", err), "error");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    if (!token || checking) {
+        return null;
+    }
 
     return (
-        <div id="create-task-view" className="w-full h-full flex flex-col pt-[72px]">
-            <nav className="navbar fixed top-0 left-0 right-0 z-50 h-[72px] px-5 md:px-10 flex justify-between items-center glass-panel rounded-none border-x-0 border-t-0 bg-white/2 dark:bg-black/5">
-                <div className="flex items-center gap-4">
-                    <Link href="/dashboard/sign-tasks" className="action-btn" title={t("cancel")}>
-                        <CaretLeft weight="bold" />
-                    </Link>
-                    <div className="flex items-center gap-2 text-sm font-medium">
-                        <span className="text-main/40 uppercase tracking-widest text-[10px]">{t("sidebar_tasks")}</span>
-                        <span className="text-main/20">/</span>
-                        <span className="text-main uppercase tracking-widest text-[10px]">
-                            {isEditing ? (t("edit_task") || "编辑任务") : t("add_task")}
-                        </span>
+        <div id="tasks-view" className="w-full h-full flex flex-col">
+            <nav className="navbar">
+                <div className="nav-brand">
+                    <div className="flex items-center gap-4">
+                        <Link href="/dashboard" className="action-btn" title={t("sidebar_home")}>
+                            <CaretLeft weight="bold" />
+                        </Link>
+                        <h1 className="text-lg font-bold tracking-tight">{t("sidebar_tasks")}</h1>
                     </div>
                 </div>
-                <div className="flex items-center gap-4">
-                    <ThemeLanguageToggle />
+                <div className="top-right-actions">
+                    <button
+                        onClick={handleExportTasks}
+                        disabled={loading}
+                        className="action-btn"
+                        title={t("export_tasks") || "Export All Tasks to Clipboard"}
+                    >
+                        <Copy weight="bold" />
+                    </button>
+                    <button
+                        onClick={handleImportTasks}
+                        disabled={loading}
+                        className="action-btn"
+                        title={t("import_tasks") || "Paste to Import Tasks"}
+                    >
+                        <ClipboardText weight="bold" />
+                    </button>
+                    <button
+                        onClick={() => loadData(token)}
+                        disabled={loading}
+                        className="action-btn"
+                        title={t("refresh_list")}
+                    >
+                        <ArrowClockwise weight="bold" className={loading ? 'animate-spin' : ''} />
+                    </button>
+                    <Link
+                        href="/dashboard/sign-tasks/create"
+                        className={`action-btn !text-[#8a3ffc] hover:bg-[#8a3ffc]/10 ${loading ? 'pointer-events-none opacity-20' : ''}`}
+                        title={t("add_task")}
+                    >
+                        <Plus weight="bold" />
+                    </Link>
                 </div>
             </nav>
 
-            <main className="flex-1 p-5 md:p-10 w-full max-w-[900px] mx-auto overflow-y-auto animate-float-up pb-20">
-                <header className="mb-10">
-                    <h1 className="text-3xl font-bold tracking-tight mb-2">
-                        {isEditing ? (t("edit_task") || "编辑任务") : t("add_task")}
-                    </h1>
-                    {isEditing && (
-                        <p className="text-[#9496a1] text-sm font-mono">{editName} · {editAccount}</p>
-                    )}
-                </header>
+            <main className="main-content !pt-6">
 
-                {loadingTask ? (
-                    <div className="flex items-center justify-center py-20 text-main/30">
-                        <Spinner size={32} className="animate-spin" />
+                {loading && tasks.length === 0 ? (
+                    <div className="w-full py-20 flex flex-col items-center justify-center text-main/20">
+                        <Spinner size={40} weight="bold" className="animate-spin mb-4" />
+                        <p className="text-xs uppercase tracking-widest font-bold font-mono">{t("login_loading")}</p>
+                    </div>
+                ) : tasks.length === 0 ? (
+                    <div className="glass-panel p-20 flex flex-col items-center text-center justify-center border-dashed border-2 group hover:border-[#8a3ffc]/30 transition-all cursor-pointer" onClick={() => router.push("/dashboard/sign-tasks/create")}>
+                        <div className="w-20 h-20 rounded-3xl bg-main/5 flex items-center justify-center text-main/20 mb-6 group-hover:scale-110 transition-transform group-hover:bg-[#8a3ffc]/10 group-hover:text-[#8a3ffc]">
+                            <Plus size={40} weight="bold" />
+                        </div>
+                        <h3 className="text-xl font-bold mb-2">{t("no_tasks")}</h3>
+                        <p className="text-sm text-[#9496a1] mb-8">{t("no_tasks_desc")}</p>
                     </div>
                 ) : (
-                <div className="grid gap-8">
-                    {/* 基本配置 */}
-                    <section className="glass-panel p-6 space-y-6">
-                        <div className="flex items-center gap-3 mb-2">
-                            <div className="p-2 bg-[#8a3ffc]/10 rounded-lg text-[#b57dff]">
-                                <Lightning weight="fill" size={18} />
-                            </div>
-                            <h2 className="text-lg font-bold">{t("basic_config")}</h2>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div className="space-y-2">
-                                <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("task_name")}</label>
-                                <input
-                                    className={`!mb-0 ${isEditing ? "opacity-50 cursor-not-allowed" : ""}`}
-                                    value={taskName}
-                                    onChange={(e) => !isEditing && setTaskName(e.target.value)}
-                                    readOnly={isEditing}
-                                    placeholder={t("task_name_placeholder")}
-                                />
-                            </div>
-                            <div className="space-y-2">
-                                <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("associated_account")}</label>
-                                <select
-                                    className={`!mb-0 ${isEditing ? "opacity-50 cursor-not-allowed" : ""}`}
-                                    value={selectedAccount}
-                                    onChange={(e) => !isEditing && handleAccountChange(e.target.value)}
-                                    disabled={isEditing}
-                                >
-                                    {accounts.map(acc => <option key={acc.name} value={acc.name}>{acc.name}</option>)}
-                                </select>
-                            </div>
-                        </div>
-
-                        {/* 调度模式 */}
-                        <div className="p-4 glass-panel !bg-black/5 space-y-4 border-white/5">
-                            <div className="flex items-center justify-between">
-                                <label className="text-xs font-bold text-main/40 uppercase tracking-wider">
-                                    {t("scheduling_mode")}
-                                </label>
-                                {/* 模式切换 */}
-                                <div className="flex rounded-lg overflow-hidden border border-white/10">
-                                    <button
-                                        type="button"
-                                        onClick={() => setExecutionMode("range")}
-                                        className={`px-3 py-1.5 text-[10px] font-bold transition-all ${
-                                            executionMode === "range"
-                                                ? "bg-[#8a3ffc] text-white"
-                                                : "bg-white/5 text-main/40 hover:text-main/70"
-                                        }`}
-                                    >
-                                        {t("mode_range")}
-                                    </button>
-                                    <button
-                                        type="button"
-                                        onClick={() => setExecutionMode("fixed")}
-                                        className={`px-3 py-1.5 text-[10px] font-bold transition-all ${
-                                            executionMode === "fixed"
-                                                ? "bg-[#8a3ffc] text-white"
-                                                : "bg-white/5 text-main/40 hover:text-main/70"
-                                        }`}
-                                    >
-                                        {t("mode_fixed")}
-                                    </button>
-                                </div>
-                            </div>
-
-                            {executionMode === "range" ? (
-                                <>
-                                    <p className="text-xs text-[#9496a1]">{t("random_range_desc")}</p>
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                        <div className="space-y-2">
-                                            <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("start_time")}</label>
-                                            <input type="time" className="!mb-0" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} />
-                                        </div>
-                                        <div className="space-y-2">
-                                            <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("end_time")}</label>
-                                            <input type="time" className="!mb-0" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} />
-                                        </div>
-                                    </div>
-                                </>
-                            ) : (
-                                <>
-                                    <p className="text-xs text-[#9496a1]">{t("fixed_cron_desc")}</p>
-                                    <div className="space-y-2">
-                                        <label className="text-xs font-bold text-main/40 uppercase tracking-wider">{t("cron_expression")}</label>
-                                        <input
-                                            className="!mb-0 font-mono"
-                                            value={signAt}
-                                            onChange={(e) => setSignAt(e.target.value)}
-                                            placeholder={t("cron_placeholder")}
-                                            spellCheck={false}
-                                        />
-                                        <p className="text-[10px] text-main/30 font-mono">
-                                            分 时 日 月 周 &nbsp;·&nbsp; 示例：
-                                            <button type="button" onClick={() => setSignAt("0 9 * * *")} className="text-[#8a3ffc] hover:underline mx-1">0 9 * * *</button>
-                                            <button type="button" onClick={() => setSignAt("30 8 * * 1-5")} className="text-[#8a3ffc] hover:underline mx-1">30 8 * * 1-5</button>
-                                        </p>
-                                    </div>
-                                </>
-                            )}
-                        </div>
-                    </section>
-
-                    {/* Chat 配置 */}
-                    <section className="glass-panel p-6 space-y-6">
-                        <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                                <div className="p-2 bg-[#8a3ffc]/10 rounded-lg text-[#b57dff]">
-                                    <ChatCircleText weight="fill" size={18} />
-                                </div>
-                                <h2 className="text-lg font-bold">{t("target_chat_config")} ({chats.length})</h2>
-                            </div>
-                            <button onClick={handleAddChat} className="btn-secondary !h-8 !px-3 font-bold !text-[10px]">
-                                + {t("add_chat")}
-                            </button>
-                        </div>
-
-                        {chats.length === 0 ? (
-                            <div className="py-10 text-center border-2 border-dashed border-white/5 rounded-2xl text-main/20">
-                                <p className="text-sm">{t("no_target_chat")}</p>
-                            </div>
-                        ) : (
-                            <div className="flex flex-col gap-3">
-                                {chats.map((chat, idx) => (
-                                    <div key={idx} className="glass-panel !bg-black/5 p-4 flex items-center justify-between group">
-                                        <div className="flex items-center gap-4">
-                                            <div className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center font-bold text-xs">{idx + 1}</div>
-                                            <div>
-                                                <div className="font-bold text-sm">{chat.name || String(chat.chat_id)}</div>
-                                                <div className="text-[10px] text-main/30 font-mono mt-0.5">
-                                                    {t("id_label")}: {chat.chat_id} | <span className="text-[#8a3ffc]/60 font-bold">{chat.actions.length} {t("actions_count")}</span>
-                                                </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        {tasks.map((task) => (
+                            <div key={task.name} className="flex flex-col gap-3">
+                                <div className="glass-panel p-4 sm:hidden">
+                                    <div className="grid grid-cols-[1fr_auto] gap-3">
+                                        <div className="min-w-0 space-y-2">
+                                            <div className="flex items-center gap-2">
+                                                <Lightning weight="fill" size={12} className="text-[#b57dff] shrink-0" />
+                                                <span className="font-bold text-sm truncate" title={task.name}>{task.name}</span>
+                                                <span className="text-[9px] font-mono text-main/30 bg-white/5 px-1.5 py-0.5 rounded border border-white/5 shrink-0">
+                                                    {task.chats[0]?.chat_id || "-"}
+                                                </span>
+                                            </div>
+                                            <span className="text-[11px] font-mono text-main/50">
+                                                {task.execution_mode === "range" && task.range_start && task.range_end
+                                                    ? `${task.range_start} - ${task.range_end}`
+                                                    : task.sign_at}
+                                            </span>
+                                            <div className="space-y-1 pt-2">
+                                                <span className={`inline-flex text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest border ${task.enabled ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-white/5 text-main/30 border-white/10'}`}>
+                                                    {task.enabled ? t("status_active") : t("status_paused")}
+                                                </span>
+                                                {(() => {
+                                                    const info = getNextRunInfo(task);
+                                                    const labelMap: Record<string, string> = {
+                                                        today: t("next_run_today"),
+                                                        tomorrow: t("next_run_tomorrow"),
+                                                        in_window: t("next_run_in_window"),
+                                                        paused: t("next_run_paused"),
+                                                        unknown: t("next_run_unknown"),
+                                                    };
+                                                    const colorMap: Record<string, string> = {
+                                                        today: "text-sky-400",
+                                                        tomorrow: "text-[#b57dff]",
+                                                        in_window: "text-emerald-400",
+                                                        paused: "text-main/30",
+                                                        unknown: "text-main/30",
+                                                    };
+                                                    return (
+                                                        <div className={`text-[10px] font-mono font-bold ${colorMap[info.label]}`}>
+                                                            {t("task_next_run")}: {info.label === "paused" || info.label === "unknown"
+                                                                ? labelMap[info.label]
+                                                                : `${labelMap[info.label]} · ${info.timeStr}`
+                                                            }
+                                                            {info.timeStr && !info.isExact && (
+                                                                <span className="text-[9px] text-main/30 font-normal ml-1">随机</span>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
+                                                {task.last_run ? (
+                                                    <div className="text-[10px] font-mono text-main/40 flex items-center gap-2">
+                                                        <span className={task.last_run.success ? 'text-emerald-400' : 'text-rose-400'}>
+                                                            {task.last_run.success ? t("success") : t("failure")}
+                                                        </span>
+                                                        <span>
+                                                            {new Date(task.last_run.time).toLocaleString(undefined, {
+                                                                month: '2-digit',
+                                                                day: '2-digit',
+                                                                hour: '2-digit',
+                                                                minute: '2-digit'
+                                                            })}
+                                                        </span>
+                                                    </div>
+                                                ) : null}
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-1">
+                                        <div className="w-14 flex flex-col items-center gap-2 pt-[2px]">
                                             <button
-                                                onClick={() => handleTestChat(idx)}
-                                                disabled={testingChatIdx !== null}
-                                                title={t("test_chat_btn") || "测试执行"}
-                                                className="action-btn !text-emerald-400 hover:!bg-emerald-500/10 disabled:opacity-40"
+                                                onClick={() => handleToggleEnabled(task)}
+                                                disabled={loading || togglingTask === task.name}
+                                                className={`action-btn !w-11 !h-11 ${task.enabled ? '!text-amber-400 hover:bg-amber-500/10' : '!text-emerald-400 hover:bg-emerald-500/10'} disabled:opacity-20 disabled:cursor-not-allowed`}
+                                                title={task.enabled ? (t("stop_task") || "停止定时任务") : (t("start_task") || "开启定时任务")}
                                             >
-                                                {testingChatIdx === idx
-                                                    ? <Spinner size={16} className="animate-spin" />
-                                                    : <Play weight="fill" />
-                                                }
+                                                {togglingTask === task.name ? <Spinner className="animate-spin" size={14} /> : task.enabled ? <Pause weight="fill" size={14} /> : <Play weight="fill" size={14} />}
                                             </button>
                                             <button
-                                                onClick={() => handleEditChat(idx)}
-                                                title={t("edit_chat_btn") || "编辑"}
-                                                className="action-btn !text-[#b57dff] hover:!bg-[#8a3ffc]/10"
+                                                onClick={() => handleRun(task)}
+                                                disabled={loading}
+                                                className="action-btn !w-11 !h-11 !text-[#b57dff] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                                title={t("manual_run") || "立即签到"}
                                             >
-                                                <PencilSimple weight="bold" />
+                                                <Lightning weight="fill" size={14} />
                                             </button>
-                                            <button onClick={() => setChats(chats.filter((_, i) => i !== idx))} className="action-btn !text-rose-400 hover:!bg-rose-500/10">
-                                                <Trash weight="bold" />
+                                            <Link
+                                                href={`/dashboard/sign-tasks/create?edit=${task.name}&account=${task.account_name}`}
+                                                className={`action-btn !w-11 !h-11 ${loading ? 'pointer-events-none opacity-20' : ''}`}
+                                                title={t("edit")}
+                                            >
+                                                <PencilSimple weight="bold" size={14} />
+                                            </Link>
+                                            <button
+                                                onClick={() => handleShowTaskHistory(task)}
+                                                disabled={loading}
+                                                className="action-btn !w-11 !h-11 !text-[#8a3ffc] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                                title={t("task_history") || "签到历史"}
+                                            >
+                                                <ListDashes weight="bold" size={14} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleShowTaskLogs(task)}
+                                                disabled={loading}
+                                                className="action-btn !w-11 !h-11 !text-sky-400 hover:bg-sky-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                                title={t("task_logs") || "执行日志"}
+                                            >
+                                                <FileText weight="bold" size={14} />
+                                            </button>
+                                            <button
+                                                onClick={() => handleDelete(task)}
+                                                disabled={loading}
+                                                className="action-btn !w-11 !h-11 !text-rose-400 hover:bg-rose-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                                title={t("delete")}
+                                            >
+                                                <Trash weight="bold" size={14} />
                                             </button>
                                         </div>
                                     </div>
-                                ))}
-                            </div>
-                        )}
-                    </section>
+                                </div>
+                                <div className="glass-panel p-6 hidden sm:flex flex-col group hover:border-[#8a3ffc]/40 transition-all">
+                                <div className="flex justify-between items-start mb-6">
+                                    <div className="flex items-center gap-4">
+                                        <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-[#8a3ffc]/20 to-[#e83ffc]/20 flex items-center justify-center text-[#b57dff] group-hover:scale-110 transition-transform">
+                                            <Lightning weight="fill" size={24} />
+                                        </div>
+                                        <div className="min-w-0">
+                                            <h3 className="font-bold text-lg truncate pr-2" title={task.name}>{task.name}</h3>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded-full uppercase tracking-widest border ${task.enabled ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : 'bg-white/5 text-main/30 border-white/10'}`}>
+                                                    {task.enabled ? t("status_active") : t("status_paused")}
+                                                </span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
 
-                    <div className="flex gap-4 pt-4">
-                        <button onClick={() => router.back()} className="btn-secondary flex-1">{t("cancel")}</button>
-                        <button onClick={handleSubmit} disabled={loading} className="btn-gradient flex-1">
-                            {loading
-                                ? <Spinner className="animate-spin mx-auto" weight="bold" />
-                                : isEditing ? (t("save_changes") || "保存修改") : t("deploy_task")
-                            }
-                        </button>
+                                <div className="space-y-4 mb-8">
+                                    <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
+                                        <div className="flex items-center gap-2 text-main/40">
+                                            <Clock weight="bold" size={14} />
+                                            <span className="text-[10px] font-bold uppercase tracking-wider">{t("task_schedule")}</span>
+                                        </div>
+                                        <span className="text-xs font-mono font-bold text-[#b57dff]">
+                                            {task.execution_mode === "range" && task.range_start && task.range_end
+                                                ? `${task.range_start} – ${task.range_end}`
+                                                : task.sign_at}
+                                        </span>
+                                    </div>
+                                    <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
+                                        <div className="flex items-center gap-2 text-main/40">
+                                            <ChatCircleText weight="bold" size={14} />
+                                            <span className="text-[10px] font-bold uppercase tracking-wider">{t("task_channels")}</span>
+                                        </div>
+                                        <span className="text-xs font-mono font-bold text-[#e83ffc]">
+                                            {t("task_hits").replace("{count}", task.chats.length.toString())}
+                                        </span>
+                                    </div>
+                                    {(() => {
+                                        const info = getNextRunInfo(task);
+                                        const labelMap: Record<string, string> = {
+                                            today: t("next_run_today"),
+                                            tomorrow: t("next_run_tomorrow"),
+                                            in_window: t("next_run_in_window"),
+                                            paused: t("next_run_paused"),
+                                            unknown: t("next_run_unknown"),
+                                        };
+                                        const colorMap: Record<string, string> = {
+                                            today: "text-sky-400",
+                                            tomorrow: "text-[#b57dff]",
+                                            in_window: "text-emerald-400",
+                                            paused: "text-main/30",
+                                            unknown: "text-main/30",
+                                        };
+                                        return (
+                                            <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
+                                                <div className="flex items-center gap-2 text-main/40">
+                                                    <CalendarBlank weight="bold" size={14} />
+                                                    <span className="text-[10px] font-bold uppercase tracking-wider">{t("task_next_run")}</span>
+                                                </div>
+                                                <span className={`text-xs font-mono font-bold ${colorMap[info.label]}`}>
+                                                    {info.label === "paused" || info.label === "unknown"
+                                                        ? (labelMap[info.label])
+                                                        : `${labelMap[info.label]} · ${info.timeStr}`
+                                                    }
+                                                    {info.timeStr && !info.isExact && (
+                                                        <span className="text-[9px] text-main/30 font-normal ml-1">随机</span>
+                                                    )}
+                                                </span>
+                                            </div>
+                                        );
+                                    })()}
+                                    <div className="flex items-center justify-between p-3 bg-white/2 rounded-xl border border-white/5">
+                                        <div className="flex items-center gap-2 text-main/40">
+                                            <Clock weight="bold" size={14} />
+                                            <span className="text-[10px] font-bold uppercase tracking-wider">{t("task_last_run")}</span>
+                                        </div>
+                                        {task.last_run ? (
+                                            <span className={`text-xs font-mono font-bold ${task.last_run.success ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                {task.last_run.success ? t("success") : t("failure")} · {new Date(task.last_run.time).toLocaleString(language === "zh" ? 'zh-CN' : 'en-US', {
+                                                    month: '2-digit',
+                                                    day: '2-digit',
+                                                    hour: '2-digit',
+                                                    minute: '2-digit'
+                                                })}
+                                            </span>
+                                        ) : (
+                                            <span className="text-xs font-mono font-bold text-main/30">{t("no_data")}</span>
+                                        )}
+                                    </div>
+                                </div>
+
+                                <div className="mt-auto flex items-center justify-between bg-black/10 -mx-6 -mb-6 p-4 border-t border-white/5">
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => handleToggleEnabled(task)}
+                                            disabled={loading || togglingTask === task.name}
+                                            className={`action-btn ${task.enabled ? '!text-amber-400 hover:bg-amber-500/10' : '!text-emerald-400 hover:bg-emerald-500/10'} disabled:opacity-20 disabled:cursor-not-allowed`}
+                                            title={task.enabled ? (t("stop_task") || "停止定时任务") : (t("start_task") || "开启定时任务")}
+                                        >
+                                            {togglingTask === task.name ? <Spinner className="animate-spin" /> : task.enabled ? <Pause weight="fill" /> : <Play weight="fill" />}
+                                        </button>
+                                        <button
+                                            onClick={() => handleRun(task)}
+                                            disabled={loading}
+                                            className="action-btn !text-[#b57dff] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                            title={t("manual_run") || "立即签到"}
+                                        >
+                                            <Lightning weight="fill" />
+                                        </button>
+                                        <Link
+                                            href={`/dashboard/sign-tasks/create?edit=${task.name}&account=${task.account_name}`}
+                                            className={`action-btn ${loading ? 'pointer-events-none opacity-20' : ''}`}
+                                            title={t("edit")}
+                                        >
+                                            <PencilSimple weight="bold" />
+                                        </Link>
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            onClick={() => handleShowTaskHistory(task)}
+                                            disabled={loading}
+                                            className="action-btn !text-[#8a3ffc] hover:bg-[#8a3ffc]/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                            title={t("task_history") || "签到历史"}
+                                        >
+                                            <ListDashes weight="bold" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleShowTaskLogs(task)}
+                                            disabled={loading}
+                                            className="action-btn !text-sky-400 hover:bg-sky-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                            title={t("task_logs") || "执行日志"}
+                                        >
+                                            <FileText weight="bold" />
+                                        </button>
+                                        <button
+                                            onClick={() => handleDelete(task)}
+                                            disabled={loading}
+                                            className="action-btn !text-rose-400 hover:bg-rose-500/10 disabled:opacity-20 disabled:cursor-not-allowed"
+                                            title={t("delete")}
+                                        >
+                                            <Trash weight="bold" />
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        ))}
                     </div>
-                </div>
                 )}
             </main>
 
-            {/* Chat 配置弹窗 */}
-            {editingChat && (
-                <div className="modal-overlay active fixed inset-0 z-[100] flex items-center justify-center p-4">
-                    <div className="glass-panel modal-content w-full max-w-lg animate-scale-in flex flex-col overflow-hidden">
-                        <header className="p-6 border-b border-white/5 flex justify-between items-center bg-black/5">
-                            <h2 className="text-xl font-bold flex items-center gap-3">
-                                <div className="p-2 bg-[#8a3ffc]/10 rounded-lg text-[#b57dff]">
-                                    {editingChatIndex !== null
-                                        ? <PencilSimple weight="bold" size={20} />
-                                        : <Plus weight="bold" size={20} />
-                                    }
-                                </div>
-                                {editingChatIndex !== null
-                                    ? (t("edit_chat_btn") || "编辑目标聊天")
-                                    : t("configure_target_chat")
-                                }
-                            </h2>
-                            <button onClick={() => setEditingChat(null)} className="action-btn !w-8 !h-8"><X weight="bold" /></button>
-                        </header>
+            <ToastContainer toasts={toasts} removeToast={removeToast} />
 
-                        <div className="p-6 space-y-6 overflow-y-auto max-h-[60vh]">
-                            <div className="space-y-2">
-                                <label className="text-xs uppercase tracking-widest font-bold text-main/40">{t("select_target_chat")}</label>
-                                <div className="space-y-2">
-                                    <label className="text-[10px] text-main/40 uppercase tracking-wider">{t("search_chat")}</label>
-                                    <input className="!mb-0" placeholder={t("search_chat_placeholder")} value={chatSearch} onChange={(e) => setChatSearch(e.target.value)} />
+            {/* 运行日志 Modal */}
+            {runningTask && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="glass-panel w-full max-w-2xl h-[500px] flex flex-col shadow-2xl border border-white/10 overflow-hidden animate-zoom-in">
+                        <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/2">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-[#8a3ffc]/20 flex items-center justify-center text-[#b57dff]">
+                                    <Lightning weight="fill" size={18} />
                                 </div>
-                                {chatSearch.trim() ? (
-                                    <div className="mt-2 max-h-48 overflow-y-auto rounded-lg border border-white/5 bg-black/5">
-                                        {chatSearchLoading ? (
-                                            <div className="px-3 py-2 text-xs text-main/40">{t("searching")}</div>
-                                        ) : chatSearchResults.length > 0 ? (
-                                            <div className="flex flex-col">
-                                                {chatSearchResults.map((chat) => {
-                                                    const title = chat.title || chat.username || String(chat.id);
-                                                    return (
-                                                        <button key={chat.id} type="button"
-                                                            className="text-left px-3 py-2 hover:bg-white/5 border-b border-white/5 last:border-b-0"
-                                                            onClick={() => { setEditingChat({ ...editingChat, chat_id: chat.id, name: title }); setChatSearch(""); setChatSearchResults([]); }}
-                                                        >
-                                                            <div className="text-sm font-semibold truncate">{title}</div>
-                                                            <div className="text-[10px] text-main/40 font-mono truncate">{chat.id}{chat.username ? ` · @${chat.username}` : ""}</div>
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
-                                        ) : (
-                                            <div className="px-3 py-2 text-xs text-main/40">{t("search_no_results")}</div>
-                                        )}
-                                    </div>
-                                ) : (
-                                    <select className="mt-2" value={editingChat.chat_id}
-                                        onChange={(e) => {
-                                            const cid = parseInt(e.target.value);
-                                            const chat = availableChats.find(c => c.id === cid);
-                                            setEditingChat({ ...editingChat, chat_id: cid, name: chat?.title || chat?.username || "" });
-                                        }}
-                                    >
-                                        <option value={0}>{t("select_chat_placeholder")}</option>
-                                        {availableChats.map(c => <option key={c.id} value={c.id}>{c.title || c.username}</option>)}
-                                    </select>
-                                )}
-                                <div className="mt-4">
-                                    <label className="text-[10px] text-main/40 uppercase tracking-wider">{t("topic_id_label") || "Topic/Thread ID (Optional)"}</label>
-                                    <input inputMode="numeric" className="!mb-0"
-                                        placeholder={t("topic_id_placeholder") || "Leave blank if not applicable"}
-                                        value={editingChat.message_thread_id || ""}
-                                        onChange={(e) => setEditingChat({ ...editingChat, message_thread_id: e.target.value ? parseInt(e.target.value) : undefined })}
-                                    />
-                                </div>
+                                <h3 className="font-bold tracking-tight">
+                                    {t("task_run_logs_title").replace("{name}", runningTask)}
+                                </h3>
                             </div>
-
-                            <div className="space-y-4">
-                                <div className="flex items-center justify-between">
-                                    <label className="text-xs uppercase tracking-widest font-bold text-main/40">{t("action_sequence_title")}</label>
-                                    <button onClick={() => setEditingChat({ ...editingChat, actions: [...editingChat.actions, { action: 1, text: "" }] })}
-                                        className="text-[10px] font-bold text-[#8a3ffc] hover:underline">
-                                        + {t("add_sign_action")}
-                                    </button>
+                            {isDone && (
+                                <button
+                                    onClick={() => setRunningTask(null)}
+                                    className="action-btn !w-8 !h-8 hover:bg-white/10"
+                                >
+                                    <X weight="bold" />
+                                </button>
+                            )}
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] leading-relaxed bg-black/20">
+                            {runLogs.length === 0 ? (
+                                <div className="flex items-center gap-2 text-main/30 italic">
+                                    <Spinner className="animate-spin" size={12} />
+                                    {t("logs_waiting")}
                                 </div>
-                                <div className="max-h-[350px] overflow-y-auto space-y-2 custom-scrollbar pr-1">
-                                    {editingChat.actions.map((act, i) => (
-                                        <div key={i} className="flex flex-col gap-2 animate-scale-in p-3 rounded-xl bg-white/3 border border-white/5">
-                                            {/* 动作类型选择行 */}
-                                            <div className="flex gap-2 items-center">
-                                                <div className="w-5 h-5 rounded-md bg-white/5 flex items-center justify-center text-[9px] font-bold text-main/30 flex-shrink-0">{i + 1}</div>
-                                                <select className="!h-8 !text-xs !mb-0 flex-1"
-                                                    value={act.action}
-                                                    onChange={(e) => {
-                                                        const newActs = [...editingChat.actions];
-                                                        newActs[i] = defaultActionData(parseInt(e.target.value));
-                                                        setEditingChat({ ...editingChat, actions: newActs });
-                                                    }}
-                                                >
-                                                    {ACTION_TYPES.map(at => (
-                                                        <option key={at.value} value={at.value}>{t(at.labelKey)}</option>
-                                                    ))}
-                                                </select>
-                                                <button onClick={() => setEditingChat({ ...editingChat, actions: editingChat.actions.filter((_, idx) => idx !== i) })}
-                                                    className="action-btn !w-8 !h-8 !text-rose-400 flex-shrink-0">
-                                                    <X weight="bold" />
-                                                </button>
-                                            </div>
-
-                                            {/* 发送文本 / 点击按钮：文本输入 */}
-                                            {(act.action === 1 || act.action === 3) && (
-                                                <input className="!h-8 !text-xs !mb-0"
-                                                    value={act.text || ""}
-                                                    placeholder={act.action === 1 ? t("placeholder_msg") : t("placeholder_btn")}
-                                                    onChange={(e) => {
-                                                        const newActs = [...editingChat.actions];
-                                                        newActs[i] = { ...act, text: e.target.value };
-                                                        setEditingChat({ ...editingChat, actions: newActs });
-                                                    }}
-                                                />
-                                            )}
-
-                                            {/* 发送骰子：emoji 选择 */}
-                                            {act.action === 2 && (
-                                                <div className="flex gap-1.5 flex-wrap">
-                                                    {DICE_OPTIONS.map(emoji => (
-                                                        <button key={emoji} type="button"
-                                                            onClick={() => {
-                                                                const newActs = [...editingChat.actions];
-                                                                newActs[i] = { ...act, dice: emoji };
-                                                                setEditingChat({ ...editingChat, actions: newActs });
-                                                            }}
-                                                            className={`w-9 h-9 rounded-lg text-lg flex items-center justify-center transition-all ${act.dice === emoji ? "bg-[#8a3ffc]/30 ring-1 ring-[#8a3ffc]" : "bg-white/5 hover:bg-white/10"}`}
-                                                        >
-                                                            {emoji}
-                                                        </button>
-                                                    ))}
-                                                </div>
-                                            )}
-
-                                                            {/* AI 自动类动作：显示具体说明 */}
-                                            {[4, 5, 6, 7].includes(act.action) && (
-                                                <p className="text-[10px] text-[#b57dff]/60 italic px-1 leading-relaxed">
-                                                    {t(`ai_hint_${act.action}` as any)}
-                                                </p>
-                                            )}
-
-                                            {/* 类型 4：可选 question 字段 */}
-                                            {act.action === 4 && (
-                                                <div className="space-y-1">
-                                                    <label className="text-[9px] text-main/30 uppercase tracking-wider block">
-                                                        {t("ai_vision_question_label")}
-                                                    </label>
-                                                    <input
-                                                        className="!h-8 !text-xs !mb-0"
-                                                        value={act.question || ""}
-                                                        placeholder={t("ai_vision_question_placeholder")}
-                                                        onChange={(e) => {
-                                                            const newActs = [...editingChat.actions];
-                                                            newActs[i] = { ...act, question: e.target.value };
-                                                            setEditingChat({ ...editingChat, actions: newActs });
-                                                        }}
-                                                    />
-                                                </div>
-                                            )}
-
-                                            {/* 关键词监听 */}
-                                            {act.action === 8 && (
-                                                <div className="space-y-2">
-                                                    <div>
-                                                        <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("monitor_keywords")}</label>
-                                                        <textarea className="!text-xs !mb-0 resize-none w-full rounded-lg px-3 py-2 bg-white/5 border border-white/10 focus:border-[#8a3ffc]/50 outline-none" rows={3}
-                                                            placeholder={t("monitor_keywords_placeholder")}
-                                                            value={(act.keywords || []).join("\n")}
-                                                            onChange={(e) => {
-                                                                const keywords = e.target.value.split(/[\n,]/).map((k: string) => k.trim()).filter(Boolean);
-                                                                const newActs = [...editingChat.actions];
-                                                                newActs[i] = { ...act, keywords };
-                                                                setEditingChat({ ...editingChat, actions: newActs });
-                                                            }}
-                                                        />
-                                                    </div>
-                                                    <div className="grid grid-cols-2 gap-2">
-                                                        <div>
-                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("match_mode")}</label>
-                                                            <select className="!h-8 !text-xs !mb-0 w-full"
-                                                                value={act.match_mode || "contains"}
-                                                                onChange={(e) => {
-                                                                    const newActs = [...editingChat.actions];
-                                                                    newActs[i] = { ...act, match_mode: e.target.value };
-                                                                    setEditingChat({ ...editingChat, actions: newActs });
-                                                                }}
-                                                            >
-                                                                <option value="contains">{t("match_contains")}</option>
-                                                                <option value="exact">{t("match_exact")}</option>
-                                                                <option value="regex">{t("match_regex")}</option>
-                                                            </select>
-                                                        </div>
-                                                        <div className="flex items-end pb-1">
-                                                            <label className="flex items-center gap-2 cursor-pointer">
-                                                                <input type="checkbox"
-                                                                    checked={act.ignore_case !== false}
-                                                                    onChange={(e) => {
-                                                                        const newActs = [...editingChat.actions];
-                                                                        newActs[i] = { ...act, ignore_case: e.target.checked };
-                                                                        setEditingChat({ ...editingChat, actions: newActs });
-                                                                    }}
-                                                                />
-                                                                <span className="text-xs">{t("ignore_case")}</span>
-                                                            </label>
-                                                        </div>
-                                                    </div>
-                                                    <div>
-                                                        <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("push_channel")}</label>
-                                                        <select className="!h-8 !text-xs !mb-0 w-full"
-                                                            value={act.push_channel || "telegram"}
-                                                            onChange={(e) => {
-                                                                const newActs = [...editingChat.actions];
-                                                                newActs[i] = { ...act, push_channel: e.target.value };
-                                                                setEditingChat({ ...editingChat, actions: newActs });
-                                                            }}
-                                                        >
-                                                            <option value="telegram">{t("push_telegram")}</option>
-                                                            <option value="forward">{t("push_forward")}</option>
-                                                            <option value="bark">{t("push_bark")}</option>
-                                                            <option value="custom">{t("push_custom")}</option>
-                                                            <option value="continue">{t("push_continue")}</option>
-                                                        </select>
-                                                    </div>
-                                                    {act.push_channel === "bark" && (
-                                                        <div>
-                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("bark_url_label")}</label>
-                                                            <input className="!h-8 !text-xs !mb-0"
-                                                                placeholder="https://api.day.app/yourkey/"
-                                                                value={act.bark_url || ""}
-                                                                onChange={(e) => {
-                                                                    const newActs = [...editingChat.actions];
-                                                                    newActs[i] = { ...act, bark_url: e.target.value };
-                                                                    setEditingChat({ ...editingChat, actions: newActs });
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    )}
-                                                    {act.push_channel === "custom" && (
-                                                        <div>
-                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("custom_push_url")}</label>
-                                                            <input className="!h-8 !text-xs !mb-0"
-                                                                placeholder={t("custom_push_url_placeholder")}
-                                                                value={act.custom_url || ""}
-                                                                onChange={(e) => {
-                                                                    const newActs = [...editingChat.actions];
-                                                                    newActs[i] = { ...act, custom_url: e.target.value };
-                                                                    setEditingChat({ ...editingChat, actions: newActs });
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    )}
-                                                    {act.push_channel === "forward" && (
-                                                        <div>
-                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("forward_chat_id_label")}</label>
-                                                            <input className="!h-8 !text-xs !mb-0"
-                                                                placeholder="-1001234567890"
-                                                                value={act.forward_chat_id || ""}
-                                                                onChange={(e) => {
-                                                                    const newActs = [...editingChat.actions];
-                                                                    newActs[i] = { ...act, forward_chat_id: e.target.value };
-                                                                    setEditingChat({ ...editingChat, actions: newActs });
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    )}
-                                                    {act.push_channel === "continue" && (
-                                                        <div>
-                                                            <label className="text-[9px] text-main/30 uppercase tracking-wider block mb-1">{t("continue_chat_id_label")}</label>
-                                                            <input className="!h-8 !text-xs !mb-0"
-                                                                placeholder="-1001234567890"
-                                                                value={act.continue_chat_id || ""}
-                                                                onChange={(e) => {
-                                                                    const newActs = [...editingChat.actions];
-                                                                    newActs[i] = { ...act, continue_chat_id: e.target.value };
-                                                                    setEditingChat({ ...editingChat, actions: newActs });
-                                                                }}
-                                                            />
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            )}
+                            ) : (
+                                <div className="space-y-1">
+                                    {runLogs.map((log, i) => (
+                                        <div key={i} className="text-main/80 flex gap-2">
+                                            <span className="text-main/20 select-none w-6 text-right">{(i + 1).toString().padStart(2, '0')}</span>
+                                            <span className="break-all">{log}</span>
                                         </div>
                                     ))}
-                                    {editingChat.actions.length === 0 && (
-                                        <div className="text-center py-4 text-xs text-main/20 italic">{t("no_actions_hint")}</div>
+                                    {!isDone && (
+                                        <div className="flex items-center gap-2 text-[#8a3ffc] mt-2 italic animate-pulse">
+                                            <Spinner className="animate-spin" size={12} />
+                                            {t("task_running")}
+                                        </div>
+                                    )}
+                                    {isDone && (
+                                        <div className="text-emerald-400 mt-4 font-bold border-t border-emerald-500/20 pt-4 flex items-center gap-2">
+                                            <Lightning weight="fill" />
+                                            {t("task_done")}
+                                        </div>
                                     )}
                                 </div>
-                            </div>
+                            )}
                         </div>
-
-                        <footer className="p-6 border-t border-white/5 flex gap-4 bg-black/10">
-                            <button onClick={() => setEditingChat(null)} className="btn-secondary flex-1">{t("cancel")}</button>
-                            <button onClick={handleSaveChat} className="btn-gradient flex-1 flex items-center justify-center gap-2">
-                                <Check weight="bold" />
-                                {editingChatIndex !== null ? (t("save_changes") || "保存修改") : t("confirm_add")}
+                        <div className="p-4 border-t border-white/5 bg-white/2 flex justify-end">
+                            <button
+                                onClick={() => setRunningTask(null)}
+                                disabled={!isDone}
+                                className={`px-6 py-2 rounded-xl font-bold text-xs transition-all ${isDone ? 'btn-gradient shadow-lg' : 'bg-white/5 text-main/20 cursor-not-allowed'}`}
+                            >
+                                {isDone ? t("close") : t("task_executing")}
                             </button>
-                        </footer>
+                        </div>
                     </div>
                 </div>
             )}
 
-            <ToastContainer toasts={toasts} removeToast={removeToast} />
-        </div>
-    );
-}
+            {/* 签到历史 Modal — 精简版：仅显示时间 + 状态 */}
+            {historyTask && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="glass-panel w-full max-w-xl h-[78vh] flex flex-col shadow-2xl border border-white/10 overflow-hidden animate-zoom-in">
+                        <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/2">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-[#8a3ffc]/20 flex items-center justify-center text-[#b57dff]">
+                                    <ListDashes weight="bold" size={18} />
+                                </div>
+                                <h3 className="font-bold tracking-tight">
+                                    {(t("task_history_title") || "签到历史 · {name}").replace("{name}", historyTask.name)}
+                                </h3>
+                            </div>
+                            <button
+                                onClick={() => setHistoryTask(null)}
+                                className="action-btn !w-8 !h-8 hover:bg-white/10"
+                            >
+                                <X weight="bold" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3 bg-black/20">
+                            {historyLoading ? (
+                                <div className="flex items-center gap-2 text-main/30 italic text-xs">
+                                    <Spinner className="animate-spin" size={12} />
+                                    {t("loading")}
+                                </div>
+                            ) : historyLogs.length === 0 ? (
+                                <div className="text-main/30 italic text-xs">{t("task_history_empty")}</div>
+                            ) : (
+                                <div className="space-y-2">
+                                    {historyLogs.map((log, i) => (
+                                        <div
+                                            key={`${log.time}-${i}`}
+                                            className="flex items-center justify-between px-3 py-2.5 rounded-lg border border-white/5 bg-white/5 hover:bg-white/10 transition-colors"
+                                        >
+                                            <div className="flex items-center gap-2 min-w-0">
+                                                {log.success ? (
+                                                    <CheckCircle weight="fill" size={16} className="text-emerald-400 shrink-0" />
+                                                ) : (
+                                                    <XCircle weight="fill" size={16} className="text-rose-400 shrink-0" />
+                                                )}
+                                                <span className="text-xs font-mono text-main/80 truncate">
+                                                    {new Date(log.time).toLocaleString(language === "zh" ? "zh-CN" : "en-US")}
+                                                </span>
+                                            </div>
+                                            <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded-full border ${log.success ? 'text-emerald-400 border-emerald-500/20 bg-emerald-500/10' : 'text-rose-400 border-rose-500/20 bg-rose-500/10'}`}>
+                                                {log.success ? t("success") : t("failure")}
+                                            </span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                        <div className="px-4 py-2 border-t border-white/5 bg-white/2 text-[10px] text-main/40 text-center">
+                            {t("task_history_hint") || "如需查看详细日志，请打开「执行日志」"}
+                        </div>
+                    </div>
+                </div>
+            )}
 
-export default function CreateSignTaskPage() {
-    return (
-        <Suspense fallback={null}>
-            <CreateSignTaskContent />
-        </Suspense>
+            {/* 执行日志 Modal — 最近一次执行的完整 flow_logs */}
+            {logsTask && (
+                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/60 backdrop-blur-sm animate-fade-in">
+                    <div className="glass-panel w-full max-w-4xl h-[78vh] flex flex-col shadow-2xl border border-white/10 overflow-hidden animate-zoom-in">
+                        <div className="p-4 border-b border-white/5 flex justify-between items-center bg-white/2">
+                            <div className="flex items-center gap-3">
+                                <div className="w-8 h-8 rounded-lg bg-sky-500/20 flex items-center justify-center text-sky-400">
+                                    <FileText weight="bold" size={18} />
+                                </div>
+                                <div>
+                                    <h3 className="font-bold tracking-tight">
+                                        {(t("task_logs_title") || "执行日志 · {name}").replace("{name}", logsTask.name)}
+                                    </h3>
+                                    {logsItem && (
+                                        <div className="text-[10px] font-mono text-main/40 mt-0.5">
+                                            {new Date(logsItem.time).toLocaleString(language === "zh" ? "zh-CN" : "en-US")} ·
+                                            <span className={`ml-1 ${logsItem.success ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                                {logsItem.success ? t("success") : t("failure")}
+                                            </span>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => { setLogsTask(null); setLogsItem(null); }}
+                                className="action-btn !w-8 !h-8 hover:bg-white/10"
+                            >
+                                <X weight="bold" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-4 font-mono text-[11px] leading-relaxed bg-black/20">
+                            {logsLoading ? (
+                                <div className="flex items-center gap-2 text-main/30 italic">
+                                    <Spinner className="animate-spin" size={12} />
+                                    {t("loading")}
+                                </div>
+                            ) : !logsItem ? (
+                                <div className="text-main/30 italic">{t("task_logs_empty") || "暂无执行日志"}</div>
+                            ) : logsItem.flow_logs && logsItem.flow_logs.length > 0 ? (
+                                <div className="space-y-1">
+                                    {logsItem.flow_logs.map((line, lineIndex) => (
+                                        <div key={lineIndex} className="text-main/80 flex gap-2">
+                                            <span className="text-main/20 select-none w-6 text-right">
+                                                {(lineIndex + 1).toString().padStart(2, "0")}
+                                            </span>
+                                            <span className="break-all whitespace-pre-wrap">{line}</span>
+                                        </div>
+                                    ))}
+                                    {logsItem.flow_truncated && (
+                                        <div className="text-[10px] text-amber-400/90 mt-2">
+                                            {t("task_history_truncated").replace("{count}", String(logsItem.flow_line_count || 0))}
+                                        </div>
+                                    )}
+                                </div>
+                            ) : (
+                                <div className="text-main/50">{logsItem.message || t("task_history_no_flow")}</div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
     );
 }
