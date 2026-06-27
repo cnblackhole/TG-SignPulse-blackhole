@@ -1514,6 +1514,10 @@ class SignTaskService:
             "proxy": proxy_dict,
             "no_updates": True,
         }
+        # 清理缓存的 Client 实例，避免老账号因缓存了半断开连接而死锁
+        from tg_signer.core import close_client_by_name
+        await close_client_by_name(account_name, workdir=session_dir)
+
         client = get_client(**client_kwargs)
 
         chats: List[Dict[str, Any]] = []
