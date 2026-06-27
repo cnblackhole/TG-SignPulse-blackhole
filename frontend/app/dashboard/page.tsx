@@ -17,6 +17,7 @@ import {
   deleteAccount,
   getAccountLogs,
   clearAccountLogs,
+  getAccountChats,
   listSignTasks,
   AccountInfo,
   AccountStatusItem,
@@ -33,7 +34,8 @@ import {
   X,
   PencilSimple,
   PaperPlaneRight,
-  Trash
+  Trash,
+  ArrowsClockwise
 } from "@phosphor-icons/react";
 import { ToastContainer, useToast } from "../../components/ui/toast";
 import { ThemeLanguageToggle } from "../../components/ThemeLanguageToggle";
@@ -310,6 +312,16 @@ export default function Dashboard() {
       addToast(formatErrorMessage("delete_failed", err), "error");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRefreshChats = async (name: string) => {
+    if (!token) return;
+    try {
+      await getAccountChats(token, name, true);
+      addToast(t("chats_refreshed"), "success");
+    } catch (err: any) {
+      addToast(t("refresh_failed"), "error");
     }
   };
 
@@ -907,6 +919,13 @@ export default function Dashboard() {
                         onClick={(e) => { e.stopPropagation(); handleShowLogs(acc.name); }}
                       >
                         <ListDashes weight="bold" size={16} />
+                      </div>
+                      <div
+                        className="action-icon !w-8 !h-8"
+                        title={t("refresh_chats")}
+                        onClick={(e) => { e.stopPropagation(); handleRefreshChats(acc.name); }}
+                      >
+                        <ArrowsClockwise weight="bold" size={16} />
                       </div>
                       <div
                         className="action-icon !w-8 !h-8"
