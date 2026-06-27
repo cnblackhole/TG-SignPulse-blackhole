@@ -28,6 +28,7 @@ import {
     Check,
     PencilSimple,
     Play,
+    ArrowsClockwise,
 } from "@phosphor-icons/react";
 import { ThemeLanguageToggle } from "../../../../components/ThemeLanguageToggle";
 import { useLanguage } from "../../../../context/LanguageContext";
@@ -89,6 +90,7 @@ function CreateSignTaskContent() {
     const [chatSearch, setChatSearch] = useState("");
     const [chatSearchResults, setChatSearchResults] = useState<ChatInfo[]>([]);
     const [chatSearchLoading, setChatSearchLoading] = useState(false);
+    const [refreshingChats, setRefreshingChats] = useState(false);
 
     // 测试执行
     const [testingChatIdx, setTestingChatIdx] = useState<number | null>(null);
@@ -195,6 +197,21 @@ function CreateSignTaskContent() {
         setSelectedAccount(accountName);
         if (token) loadChats(token, accountName);
     };
+
+    const handleRefreshChats = useCallback(async () => {
+        if (!token || !selectedAccount || refreshingChats) return;
+        setRefreshingChats(true);
+        try {
+            const data = await getAccountChats(token, selectedAccount, true);
+            setAvailableChats(data);
+            addToastRef.current(tRef.current("chats_refreshed"), "success");
+        } catch (err: any) {
+            const msg = typeof err === 'object' && err?.message ? err.message : '';
+            addToastRef.current(msg || tRef.current("refresh_failed"), "error");
+        } finally {
+            setRefreshingChats(false);
+        }
+    }, [token, selectedAccount, refreshingChats]);
 
     useEffect(() => {
         if (!token || !selectedAccount) return;
@@ -564,7 +581,22 @@ function CreateSignTaskContent() {
 
                         <div className="p-6 space-y-6 overflow-y-auto max-h-[60vh]">
                             <div className="space-y-2">
-                                <label className="text-xs uppercase tracking-widest font-bold text-main/40">{t("select_target_chat")}</label>
+                                <div className="flex items-center justify-between">
+                                    <label className="text-xs uppercase tracking-widest font-bold text-main/40">{t("select_target_chat")}</label>
+                                    <button
+                                        type="button"
+                                        className={`p-1.5 rounded-lg transition-colors ${
+                                            refreshingChats
+                                                ? 'text-[#8a3ffc] animate-spin pointer-events-none'
+                                                : 'text-main/30 hover:text-main/60 hover:bg-white/5'
+                                        }`}
+                                        title={t("refresh_chat_title")}
+                                        onClick={handleRefreshChats}
+                                        disabled={refreshingChats}
+                                    >
+                                        <ArrowsClockwise weight="bold" size={16} />
+                                    </button>
+                                </div>
                                 <div className="space-y-2">
                                     <label className="text-[10px] text-main/40 uppercase tracking-wider">{t("search_chat")}</label>
                                     <input className="!mb-0" placeholder={t("search_chat_placeholder")} value={chatSearch} onChange={(e) => setChatSearch(e.target.value)} />
