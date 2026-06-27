@@ -649,7 +649,14 @@ class TelegramService:
         client = Client(**client_kwargs)
 
         try:
-            async with global_semaphore:
+            # 获取全局信号量（带超时，避免被其他死锁操作无限阻塞）
+            try:
+                await asyncio.wait_for(global_semaphore.acquire(), timeout=120)
+            except asyncio.TimeoutError:
+                _release_account_lock()
+                raise ValueError("系统繁忙，请稍后重试或重启容器")
+
+            try:
                 await client.connect()
 
                 self._accounts_cache = None
@@ -662,6 +669,8 @@ class TelegramService:
                         pass
 
                 sent_code = await client.send_code(phone_number)
+            finally:
+                global_semaphore.release()
 
             session_key = f"{account_name}_{phone_number}"
             _login_sessions[session_key] = {
@@ -799,20 +808,59 @@ class TelegramService:
         if account_lock and not account_lock.locked():
             await account_lock.acquire()
 
+        # 获取全局信号量（带超时，避免被其他死锁操作无限阻塞）
         try:
-            async with global_semaphore:
-                # 重新连接 (因为 start_login 中断开了)
-                if not client.is_connected:
-                    await client.connect()
+            await asyncio.wait_for(global_semaphore.acquire(), timeout=120)
+        except asyncio.TimeoutError:
+            _release_account_lock()
+            raise ValueError("系统繁忙，请稍后重试或重启容器")
 
-                # 移除验证码中的空格和横线
-                phone_code = phone_code.strip().replace(" ", "").replace("-", "")
+        try:
+            # 已在上面获取 global_semaphore
+            # 重新连接 (因为 start_login 中断开了)
+            if not client.is_connected:
+                await client.connect()
 
-                # 尝试使用验证码登录
+            # 移除验证码中的空格和横线
+            phone_code = phone_code.strip().replace(" ", "").replace("-", "")
+
+            # 尝试使用验证码登录
+            try:
+                await client.sign_in(phone_number, phone_code_hash, phone_code)
+
+                # 登录成功，获取用户信息
+                me = await client.get_me()
+                await _persist_session_string()
+                _persist_proxy_setting()
+                set_account_status(
+                    account_name,
+                    status="connected",
+                    message="",
+                    code="OK",
+                    needs_relogin=False,
+                )
+
+                # 断开连接并清理
+                await client.disconnect()
+                _login_sessions.pop(session_key, None)
+                _release_account_lock()
+
+                return {
+                    "success": True,
+                    "user_id": me.id,
+                    "first_name": me.first_name,
+                    "username": me.username,
+                }
+
+            except SessionPasswordNeeded:
+                # 需要 2FA 密码
+                if not password:
+                    # 不断开连接，等待用户输入 2FA 密码
+                    raise ValueError("此账号启用了两步验证，请输入 2FA 密码")
+
+                # 使用 2FA 密码登录
                 try:
-                    await client.sign_in(phone_number, phone_code_hash, phone_code)
-
-                    # 登录成功，获取用户信息
+                    await client.check_password(password)
                     me = await client.get_me()
                     await _persist_session_string()
                     _persist_proxy_setting()
@@ -835,40 +883,11 @@ class TelegramService:
                         "first_name": me.first_name,
                         "username": me.username,
                     }
+                except PasswordHashInvalid:
+                    raise ValueError("2FA 密码错误")
 
-                except SessionPasswordNeeded:
-                    # 需要 2FA 密码
-                    if not password:
-                        # 不断开连接，等待用户输入 2FA 密码
-                        raise ValueError("此账号启用了两步验证，请输入 2FA 密码")
-
-                    # 使用 2FA 密码登录
-                    try:
-                        await client.check_password(password)
-                        me = await client.get_me()
-                        await _persist_session_string()
-                        _persist_proxy_setting()
-                        set_account_status(
-                            account_name,
-                            status="connected",
-                            message="",
-                            code="OK",
-                            needs_relogin=False,
-                        )
-
-                        # 断开连接并清理
-                        await client.disconnect()
-                        _login_sessions.pop(session_key, None)
-                        _release_account_lock()
-
-                        return {
-                            "success": True,
-                            "user_id": me.id,
-                            "first_name": me.first_name,
-                            "username": me.username,
-                        }
-                    except PasswordHashInvalid:
-                        raise ValueError("2FA 密码错误")
+            finally:
+                global_semaphore.release()
 
         except PhoneCodeInvalid:
             # 清理 session
